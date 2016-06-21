@@ -103,11 +103,6 @@ type
 	end;
 
 function ROR64(const Value: Int64; const n: Integer): Int64;
-function ROR64_32(const Value: Int64): Int64;
-function ROR64_24(const Value: Int64): Int64;
-function ROR64_16(const Value: Int64): Int64;
-function ROR64_63(const Value: Int64): Int64;
-
 
 implementation
 
@@ -914,84 +909,48 @@ end;
 
 function ROR64(const Value: Int64; const n: Integer): Int64;
 var
-	lo, hi: LongWord;
-	r: Int64Rec absolute Result; //Delphi 7 is unable to bit-shift a Cardinal up into a Int64
+	i: Int64Rec absolute Value;
+	r: Int64Rec absolute Result;
 begin
-	lo := LongWord(Value and $FFFFFFFF);
-	hi := LongWord(Value shr 32);
-
 	case n of
 	32:
 		begin
 			//It is a swap of Lo and Hi
-			r.Lo := hi;
-			r.Hi := Lo;
+			r.Lo := i.hi;
+			r.Hi := i.Lo;
 		end;
 	24:
 		begin
-			r.lo := (hi shl  8) or (lo shr 24);
-			r.hi := (hi shr 24) or (lo shl  8);
+			r.lo := (i.hi shl  8) or (i.lo shr 24);
+			r.hi := (i.hi shr 24) or (i.lo shl  8);
 		end;
 	16:
 		begin
-			r.lo := (hi shl 16) or (lo shr 16);
-			r.hi := (hi shr 16) or (lo shl 16);
+			r.lo := (i.hi shl 16) or (i.lo shr 16);
+			r.hi := (i.hi shr 16) or (i.lo shl 16);
 		end;
 	63:
 		begin
-			r.lo := (lo shl 1) or (hi shr 31);
-			r.hi := (hi shl 1) or (lo shr 31);
+			r.lo := (i.lo shl 1) or (i.hi shr 31);
+			r.hi := (i.hi shl 1) or (i.lo shr 31);
 		end;
 	else
 		raise EArgon2Exception.Create('');
 	end;
 end;
 
-function ROR64_32(const Value: Int64): Int64;
-var
-	i: Int64Rec absolute Value;
-	r: Int64Rec absolute Result;
-begin
-	r.Lo := i.hi;
-	r.Hi := i.Lo;
-end;
-
-function ROR64_24(const Value: Int64): Int64;
-var
-	i: Int64Rec absolute Value;
-	r: Int64Rec absolute Result;
-begin
-	r.lo := (i.hi shl  8) or (i.lo shr 24);
-	r.hi := (i.hi shr 24) or (i.lo shl  8);
-end;
-
-function ROR64_16(const Value: Int64): Int64;
-var
-	i: Int64Rec absolute Value;
-	r: Int64Rec absolute Result;
-begin
-	r.lo := (i.hi shl 16) or (i.lo shr 16);
-	r.hi := (i.hi shr 16) or (i.lo shl 16);
-end;
-
-function ROR64_63(const Value: Int64): Int64;
-var
-	i: Int64Rec absolute Value;
-	r: Int64Rec absolute Result;
-begin
-	r.lo := (i.lo shl 1) or (i.hi shr 31);
-	r.hi := (i.hi shl 1) or (i.lo shr 31);
-end;
+type
+	TVector16i = array[0..15] of Integer;
+	PVector16i = ^TVector16i;
 
 { TBlake2bOptimized }
 
 {$OVERFLOWCHECKS OFF}
 procedure TBlake2bOptimized.BlakeCompress(const m: PBlake2bBlockArray; cbBytesProcessed: Int64; IsFinalBlock: Boolean);
 var
-//	V: TBlake2bBlockArray;  //local work vector
-	S: array[0..15] of Integer; //current round message mixing schedule
-	i, j: Integer; //indexes
 	v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14, v15: Int64;
+	S: PVector16i; //current round message mixing schedule
+	i, j: Integer; //indexes
 	t1, t2, t3, t4: UInt64Rec;
 	s1, s2, s3, s4: LongWord; //swap temp
 const
@@ -1029,84 +988,100 @@ begin
 	for i := 0 to r-1 do //0..11 (r=12 for for Blake2b)
 	begin
 		//Message word selection permutation for this round
-		Move(SIGMA[i mod 10][0], S[0], 16*SizeOf(Integer));
+{		if (i < 10) then
+			S := PVector16i(Addr(SIGMA[i][0]))
+		else
+			S := PVector16i(Addr(SIGMA[i mod 10][0]));}
+		case i of
+		0..9: S := PVector16i(Addr(SIGMA[i][0]));
+		10:   S := PVector16i(Addr(SIGMA[0][0]));
+		11:   S := PVector16i(Addr(SIGMA[1][0]));
+		else
+			S := PVector16i(Addr(SIGMA[i][0]));
+		end;
 
-		//First half
+		//1. Mix(V0, V4, V8,  V12, m[S0], m[S1])
+		//2. Mix(V1, V5, V9,  V13, m[S2], m[S3])
+		//3. Mix(V2, V6, V10, V14, m[S4], m[S5])
+		//4. Mix(V3, V7, V11, V15, m[S6], m[S7])
 			v0  := v0 + v4 + m[S[0]];       //with input
 			v1  := v1 + v5 + m[S[2]];       //with input
 			v2  := v2 + v6 + m[S[4]];       //with input
 			v3  := v3 + v7 + m[S[6]];       //with input
 
-			//A ROR64(32) is actually a swap of the Lo and Hi DWORDs. We'll do the swap ourselves
-			//v12 := ROR64_32(v12 xor v0);
-			//v13 := ROR64_32(v13 xor v1);
-			//v14 := ROR64_32(v14 xor v2);
-			//v15 := ROR64_32(v15 xor v3);
-				//Poor man's AVX
-				t1.Value := (v12 xor v0);
-				t2.Value := (v13 xor v1);
-				t3.Value := (v14 xor v2);
-				t4.Value := (v15 xor v3);
+			//Poor man's AVX
+			t1.Value := (v12 xor v0);
+			t2.Value := (v13 xor v1);
+			t3.Value := (v14 xor v2);
+			t4.Value := (v15 xor v3);
 
-				//Swap Lo and Hi in t1..4
-				Int64Rec(v12).Lo := t1.Hi; Int64Rec(v12).Hi := t1.Lo;
-				Int64Rec(v13).Lo := t2.Hi; Int64Rec(v13).Hi := t2.Lo;
-				Int64Rec(v14).Lo := t3.Hi; Int64Rec(v14).Hi := t3.Lo;
-				Int64Rec(v15).Lo := t4.Hi; Int64Rec(v15).Hi := t4.Lo;
+			//Swap Lo and Hi in t1..4
+			Int64Rec(v12).Lo := t1.Hi; Int64Rec(v12).Hi := t1.Lo;
+			Int64Rec(v13).Lo := t2.Hi; Int64Rec(v13).Hi := t2.Lo;
+			Int64Rec(v14).Lo := t3.Hi; Int64Rec(v14).Hi := t3.Lo;
+			Int64Rec(v15).Lo := t4.Hi; Int64Rec(v15).Hi := t4.Lo;
 
 			v8  := (v8  + v12);       //no input
 			v9  := (v9  + v13);       //no input
 			v10 := (v10 + v14);       //no input
 			v11 := (v11 + v15);       //no input
 
-			v4  := ROR64_24(v4 xor  v8);
-			v5  := ROR64_24(v5 xor  v9);
-			v6  := ROR64_24(v6 xor v10);
-			v7  := ROR64_24(v7 xor v11);
-			{	t1.Value := (v4 xor v8 );
-				t2.Value := (v5 xor v9 );
-				t3.Value := (v6 xor v10);
-				t4.Value := (v7 xor v11);
-				v4 := ROR64_24(t1.Value);
-				v5 := ROR64_24(t2.Value);
-				v6 := ROR64_24(t3.Value);
-				v7 := ROR64_24(t4.Value);}
+			t1.Value := v4 xor v8;
+			t2.Value := v5 xor v9;
+			t3.Value := v6 xor v10;
+			t4.Value := v7 xor v11;
+
+			Int64Rec(v4).lo := (t1.Hi shl  8) or (t1.lo shr 24);
+			Int64Rec(v4).hi := (t1.Hi shr 24) or (t1.lo shl  8);
+			Int64Rec(v5).lo := (t2.Hi shl  8) or (t2.lo shr 24);
+			Int64Rec(v5).hi := (t2.Hi shr 24) or (t2.lo shl  8);
+			Int64Rec(v6).lo := (t3.Hi shl  8) or (t3.lo shr 24);
+			Int64Rec(v6).hi := (t3.Hi shr 24) or (t3.lo shl  8);
+			Int64Rec(v7).lo := (t4.Hi shl  8) or (t4.lo shr 24);
+			Int64Rec(v7).hi := (t4.Hi shr 24) or (t4.lo shl  8);
+
 
 			v0  := (v0 + v4 + m[S[1]]);   //with input
 			v1  := (v1 + v5 + m[S[3]]);   //with input
 			v2  := (v2 + v6 + m[S[5]]);   //with input
 			v3  := (v3 + v7 + m[S[7]]);   //with input
 
-			v12 := ROR64_16(v12 xor v0);
-			v13 := ROR64_16(v13 xor v1);
-			v14 := ROR64_16(v14 xor v2);
-			v15 := ROR64_16(v15 xor v3);
-			{	t1.Value := (v12 xor v0 );
-				t2.Value := (v13 xor v1 );
-				t3.Value := (v14 xor v2);
-				t4.Value := (v15 xor v3);
-				v12 := ROR64_16(t1.Value);
-				v13 := ROR64_16(t2.Value);
-				v14 := ROR64_16(t3.Value);
-				v15 := ROR64_16(t4.Value);}
+			t1.Value := v12 xor v0;
+			t2.Value := v13 xor v1;
+			t3.Value := v14 xor v2;
+			t4.Value := v15 xor v3;
+
+			Int64Rec(v12).lo := (t1.Hi shl 16) or (t1.lo shr 16);
+			Int64Rec(v12).hi := (t1.Hi shr 16) or (t1.lo shl 16);
+			Int64Rec(v13).lo := (t2.Hi shl 16) or (t2.lo shr 16);
+			Int64Rec(v13).hi := (t2.Hi shr 16) or (t2.lo shl 16);
+			Int64Rec(v14).lo := (t3.Hi shl 16) or (t3.lo shr 16);
+			Int64Rec(v14).hi := (t3.Hi shr 16) or (t3.lo shl 16);
+			Int64Rec(v15).lo := (t4.Hi shl 16) or (t4.lo shr 16);
+			Int64Rec(v15).hi := (t4.Hi shr 16) or (t4.lo shl 16);
+
+
 
 			v8  := (v8  + v12);       //no input
 			v9  := (v9  + v13);       //no input
 			v10 := (v10 + v14);       //no input
 			v11 := (v11 + v15);       //no input
 
-			v4  := ROR64_63(v4 xor  v8);
-			v5  := ROR64_63(v5 xor  v9);
-			v6  := ROR64_63(v6 xor v10);
-			v7  := ROR64_63(v7 xor v11);
-			{	t1.Value := (v4 xor v8 );
-				t2.Value := (v5 xor v9 );
-				t3.Value := (v6 xor v10);
-				t4.Value := (v7 xor v11);
-				v4 := ROR64_63(t1.Value);
-				v5 := ROR64_63(t2.Value);
-				v6 := ROR64_63(t3.Value);
-				v7 := ROR64_63(t4.Value);}
+			t1.Value := v4 xor v8;
+			t2.Value := v5 xor v9;
+			t3.Value := v6 xor v10;
+			t4.Value := v7 xor v11;
+
+			Int64Rec(v4).lo := (t1.Hi shr 31) or (t1.lo shl  1);
+			Int64Rec(v4).hi := (t1.Hi shl  1) or (t1.lo shr 31);
+			Int64Rec(v5).lo := (t2.Hi shr 31) or (t2.lo shl  1);
+			Int64Rec(v5).hi := (t2.Hi shl  1) or (t2.lo shr 31);
+			Int64Rec(v6).lo := (t3.Hi shr 31) or (t3.lo shl  1);
+			Int64Rec(v6).hi := (t3.Hi shl  1) or (t3.lo shr 31);
+			Int64Rec(v7).lo := (t4.Hi shr 31) or (t4.lo shl  1);
+			Int64Rec(v7).hi := (t4.Hi shl  1) or (t4.lo shr 31);
+
+
 
 		//Second half
 			v0  := (v0 + v5 + m[S[ 8]]);       //with input
@@ -1114,10 +1089,6 @@ begin
 			v2  := (v2 + v7 + m[S[12]]);       //with input
 			v3  := (v3 + v4 + m[S[14]]);       //with input
 
-			//v15 := ROR64_32(v15 xor v0); performing the ROR inline adds 1MB/s
-			//v12 := ROR64_32(v12 xor v1);
-			//v13 := ROR64_32(v13 xor v2);
-			//v14 := ROR64_32(v14 xor v3);
 				t1.Value := (v12 xor v1);
 				t2.Value := (v13 xor v2);
 				t3.Value := (v14 xor v3);
@@ -1134,57 +1105,59 @@ begin
 			v8  := (v8  + v13);       //no input
 			v9  := (v9  + v14);       //no input
 
-			v5  := ROR64_24(v5 xor v10);
-			v6  := ROR64_24(v6 xor v11);
-			v7  := ROR64_24(v7 xor v8);
-			v4  := ROR64_24(v4 xor v9);
-			{	I would have thought unrolling these like i did with the ROR64(32) would have helped.
-				But it is actually worse.
-				Even if i did t1+ror, t2+ror, t3+ror, t4+ror. It's still slower.
-				t1.Value := (v5 xor v10);
-				t2.Value := (v6 xor v11);
-				t3.Value := (v7 xor v8);
-				t4.Value := (v4 xor v9);
-				v5 := ROR64_24(t1.Value);
-				v6 := ROR64_24(t2.Value);
-				v7 := ROR64_24(t3.Value);
-				v4 := ROR64_24(t4.Value);}
+			t1.Value := v5 xor v10;
+			t2.Value := v6 xor v11;
+			t3.Value := v7 xor v8;
+			t4.Value := v4 xor v9;
+
+			Int64Rec(v5).lo := (t1.Hi shl  8) or (t1.lo shr 24);
+			Int64Rec(v5).hi := (t1.Hi shr 24) or (t1.lo shl  8);
+			Int64Rec(v6).lo := (t2.Hi shl  8) or (t2.lo shr 24);
+			Int64Rec(v6).hi := (t2.Hi shr 24) or (t2.lo shl  8);
+			Int64Rec(v7).lo := (t3.Hi shl  8) or (t3.lo shr 24);
+			Int64Rec(v7).hi := (t3.Hi shr 24) or (t3.lo shl  8);
+			Int64Rec(v4).lo := (t4.Hi shl  8) or (t4.lo shr 24);
+			Int64Rec(v4).hi := (t4.Hi shr 24) or (t4.lo shl  8);
+
 
 			v0  := (v0 + v5 + m[S[ 9]]);   //with input
 			v1  := (v1 + v6 + m[S[11]]);   //with input
 			v2  := (v2 + v7 + m[S[13]]);   //with input
 			v3  := (v3 + v4 + m[S[15]]);   //with input
 
-			v15 := ROR64_16(v15 xor v0);
-			v12 := ROR64_16(v12 xor v1);
-			v13 := ROR64_16(v13 xor v2);
-			v14 := ROR64_16(v14 xor v3);
-			{	t1.Value := (v15 xor v0 );
-				t2.Value := (v12 xor v1 );
-				t3.Value := (v13 xor v2);
-				t4.Value := (v14 xor v3);
-				v15 := ROR64_16(t1.Value);
-				v12 := ROR64_16(t2.Value);
-				v13 := ROR64_16(t3.Value);
-				v14 := ROR64_16(t4.Value);}
+			t1.Value := v15 xor v0;
+			t2.Value := v12 xor v1;
+			t3.Value := v13 xor v2;
+			t4.Value := v14 xor v3;
+
+			Int64Rec(v15).lo := (t1.Hi shl 16) or (t1.lo shr 16);
+			Int64Rec(v15).hi := (t1.Hi shr 16) or (t1.lo shl 16);
+			Int64Rec(v12).lo := (t2.Hi shl 16) or (t2.lo shr 16);
+			Int64Rec(v12).hi := (t2.Hi shr 16) or (t2.lo shl 16);
+			Int64Rec(v13).lo := (t3.Hi shl 16) or (t3.lo shr 16);
+			Int64Rec(v13).hi := (t3.Hi shr 16) or (t3.lo shl 16);
+			Int64Rec(v14).lo := (t4.Hi shl 16) or (t4.lo shr 16);
+			Int64Rec(v14).hi := (t4.Hi shr 16) or (t4.lo shl 16);
+
 
 			v10 := (v10 + v15);       //no input
 			v11 := (v11 + v12);       //no input
 			v8  := (v8  + v13);       //no input
 			v9  := (v9  + v14);       //no input
 
-			v5 := ROR64_63(v5 xor v10);
-			v6 := ROR64_63(v6 xor v11);
-			v7 := ROR64_63(v7 xor v8);
-			v4 := ROR64_63(v4 xor v9);
-			{	t1.Value := (v5 xor v10);
-				t2.Value := (v6 xor v11);
-				t3.Value := (v7 xor v8 );
-				t4.Value := (v4 xor v9 );
-				v5 := ROR64_63(t1.Value, 63);
-				v6 := ROR64_63(t2.Value, 63);
-				v7 := ROR64_63(t3.Value, 63);
-				v4 := ROR64_63(t4.Value, 63);}
+			t1.Value := v5 xor v10;
+			t2.Value := v6 xor v11;
+			t3.Value := v7 xor v8;
+			t4.Value := v4 xor v9;
+
+			Int64Rec(v5).lo := (t1.Hi shr 31) or (t1.lo shl  1);
+			Int64Rec(v5).hi := (t1.Hi shl  1) or (t1.lo shr 31);
+			Int64Rec(v6).lo := (t2.Hi shr 31) or (t2.lo shl  1);
+			Int64Rec(v6).hi := (t2.Hi shl  1) or (t2.lo shr 31);
+			Int64Rec(v7).lo := (t3.Hi shr 31) or (t3.lo shl  1);
+			Int64Rec(v7).hi := (t3.Hi shl  1) or (t3.lo shr 31);
+			Int64Rec(v4).lo := (t4.Hi shr 31) or (t4.lo shl  1);
+			Int64Rec(v4).hi := (t4.Hi shl  1) or (t4.lo shr 31);
 	end;
 
 	//Mix the upper and lower halves of V into ongoing state vector h
