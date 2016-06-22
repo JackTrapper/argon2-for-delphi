@@ -17,8 +17,11 @@ type
 		procedure Blake2b_SpeedTest;
 
 		procedure HashAlgorithm_Blake2b_RFC;
+		procedure HashAlgorithm_Blake2b_SelfTest;
 		procedure HashAlgorithm_Blake2b_TestVectors;
 		procedure HashAlgorithm_Blake2b_KeyedTestVectors;
+
+		procedure HashAlgorithm_Blake2b_SMHasher;
 	end;
 
 implementation
@@ -118,7 +121,6 @@ var
 	key: array[0..63] of Byte;
 	actual: TBytes;
 	expected: TBytes;
-	mac: IHmacAlgorithm;
 	i: Integer;
 begin
 	{
@@ -140,14 +142,12 @@ begin
 	for i := 0 to 63 do
 		key[i] := i;
 
-	mac := TArgon2Friend.CreateObject('Blake2b') as IHMacAlgorithm;
-
 	for i := 0 to 255 do
 	begin
 		if i > 0 then
 			input[i-1] := Byte(i-1);
 
-		actual := mac.HashData(key[0], 64, input[0], i);
+		actual := TArgon2Friend.HashData(input[0], i, 64, key[0], 64);
 
 		expected := Self.HexStringToBytes(Self.GetBlake2BKeyedTestVector(i));
 
@@ -172,14 +172,9 @@ begin
 	We compute the unkeyed hash of three ASCII bytes "abc" with
 	BLAKE2b-512 and show internal values during computation.
 }
-	hash := TArgon2Friend.CreateObject('Blake2b') as IHashAlgorithm;
-
 	s := 'abc';
-	Move(s[1], m[0], 3);
 
-	hash.HashData(Pointer(s)^, Length(s));
-	actual := hash.Finalize;
-	hash := nil;
+	actual := TArgon2Friend.HashData(Pointer(s)^, Length(s), 64, Pointer(nil)^, 0);
 
 	expected := HexStringToBytes(
 			'BA 80 A5 3F 98 1C 4D 0D 6A 27 97 B6 9F 12 F6 E9'+
@@ -219,10 +214,7 @@ begin
 		if i > 0 then
 			input[i-1] := Byte(i-1);
 
-		hash := TArgon2Friend.CreateObject('Blake2b') as IHashAlgorithm;
-		hash.HashData(input[0], i);
-		actual := hash.Finalize;
-		hash := nil;
+		actual := TArgon2Friend.HashData(input[0], i, 64, Pointer(nil)^, 0);
 
 		expected := Self.HexStringToBytes(GetBlake2BUnkeyedTestVector(i));
 
@@ -784,6 +776,139 @@ begin
 		Result := '';
 	end;
 end;
+
+procedure TArgon2Tests.HashAlgorithm_Blake2b_SMHasher;
+const
+	HashBytes = 64;
+var
+	key: Integer;
+	data: array[0..255] of Byte; //256
+	hashes: array[0..256*HashBytes] of Byte; //256*HashBytes
+	i: Integer;
+	actual: LongWord;
+	digest: TBytes;
+begin
+	{
+		Try to cross-verify with the expected vector from Blake2 in SMHasher
+
+			https://github.com/rurban/smhasher
+
+		Unfortunately he only supports Blake2a_64. We are Blake2b_64
+
+		main.cpp - https://github.com/rurban/smhasher/blob/5dbc45c46cb77fce3e88a0f948a1e58c6969da6d/main.cpp
+
+			BLAKE2_64a, 64, 0xF9376EA7, "blake2_64a", "BLAKE2, first 64 bits of result"
+
+		Since he doesn't support Blake2b, we'll assume our result (0xC1C82FAA) is correct:
+	}
+	ZeroMemory(@data[0], 256);
+	ZeroMemory(@hashes[0], 256*HashBytes);
+
+	{
+		Hash data of the form
+			00 (N=0)
+			00 01 (N=1)
+			00 01 02 (N=2)
+			...
+			00 01 02 ... FE FF (N=255)
+
+		using 256-N as the key
+	}
+
+	for i := 0 to 255 do
+	begin
+		data[i] := Byte(i);
+		key := 256-i;
+
+		digest := TArgon2Friend.HashData(data[0], i, 64, key, 4);
+
+		Move(Pointer(digest)^, hashes[i*HashBytes], HashBytes);
+	end;
+
+	//And then hash the result array
+	digest := TArgon2Friend.HashData(hashes[0], 256*HashBytes, 64, key, 0);
+
+	// The first four bytes of that hash, interpreted as a little-endian integer, is our verification value
+	Move(Pointer(digest)^, actual, 4);
+
+	CheckEquals($C1C82FAA, actual);
+end;
+
+{$OVERFLOWCHECKS OFF}
+procedure TArgon2Tests.HashAlgorithm_Blake2b_SelfTest;
+
+const
+	DataLengths: array[0..5] of Integer = (0, 3, 128, 129, 255, 1024);
+	KeyLengths: array[0..3] of Integer = (20, 32, 48, 64);
+var
+	runningHash: IHashAlgorithm;
+	i, j: Integer;
+	dataLen, keyLen, hashLen: Integer;
+	data: array[0..1023] of Integer;
+	key: array[0..63] of Integer;
+	digest: TBytes;
+	expected: TBytes;
+
+	procedure GenerateSequence(var buffer: array of Integer; bufferLen: Integer);
+	var
+		a, b, t: Cardinal;
+		n: Integer;
+	begin
+		a := $DEAD4BAD * Cardinal(bufferLen);
+		b := 1;
+
+		for n := 0 to bufferLen-1 do
+		begin
+			t := a+b;
+			a := b;
+			b := t;
+
+			buffer[n] := (t shr 24);
+		end;
+
+	end;
+begin
+	{
+		From Appendix E of the RFC.  My god they need to get someone who can write clearer code
+	}
+	runningHash := TArgon2Friend.CreateHash('Blake2b', 32, Pointer(nil)^, 0); //32 byte digest, no key
+
+	//For each key/hash length we want to try
+	for i := 0 to 3 do
+	begin
+		hashLen := KeyLengths[i];
+		keyLen := KeyLengths[i];
+
+		//For each buffer size we want to try
+		for j := 0 to 5 do
+		begin
+			dataLen := DataLengths[j];
+
+			//Fill the data buffer with dataLen bytes of data
+			GenerateSequence(data, dataLen);
+
+			//Hash the data (with no key), and add the digest to our running hash
+			digest := TArgon2Friend.HashData(data, dataLen, hashLen, Pointer(nil)^, 0);
+			runningHash.HashData(digest[0], hashLen);
+
+			//Generate a sequence to use as a key
+			GenerateSequence(key, keyLen);
+
+			//Hash the data (with the generated key), and add the digest to our running hash
+			digest := TArgon2Friend.HashData(data, dataLen, hashLen, key, keyLen);
+			runningHash.HashData(digest[0], hashLen);
+		end;
+	end;
+
+	//Finalize the running hash
+	digest := runningHash.Finalize;
+
+	expected := Self.HexStringToBytes('C23A7800D98123BD 10F506C61E29DA56 03D763B8BBAD2E73 7F5E765A7BCCD475');
+
+	CheckEquals(Length(expected), Length(digest), 'Lengths of digest arrays do not match');
+	CheckEqualsMem(Pointer(expected), Pointer(digest), Length(digest), 'Digest does not match');
+end;
+{$OVERFLOWCHECKS ON}
 
 initialization
 	RegisterTest('Library/Argon2', TArgon2Tests.Suite);
