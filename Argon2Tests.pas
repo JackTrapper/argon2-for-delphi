@@ -3,7 +3,7 @@ unit Argon2Tests;
 interface
 
 uses
-	TestFramework, Argon2;
+	TestFramework, SysUtils, Argon2;
 
 type
 	TArgon2Tests = class(TTestCase)
@@ -16,10 +16,11 @@ type
 		procedure Test_ROR64;
 		procedure Blake2b_SpeedTest;
 
-		procedure HashAlgorithm_Blake2b_RFC;
-		procedure HashAlgorithm_Blake2b_SelfTest;
-		procedure HashAlgorithm_Blake2b_TestVectors;
-		procedure HashAlgorithm_Blake2b_KeyedTestVectors;
+		procedure HashAlgorithm_Blake2b_RFCAppendixA; //RFC7693 - Appendix A
+		procedure HashAlgorithm_Blake2b_RFCAppendixE; //RFC7693 - Appendix E
+		procedure HashAlgorithm_Blake2b_TestVectors;  //from C# reference implementation on GitHub
+		procedure HashAlgorithm_Blake2b_KeyedTestVectors; //from C# reference implementation on GitHub
+		procedure HashAlgorithm_Blake2b_Splits;
 
 		procedure HashAlgorithm_Blake2b_SMHasher;
 	end;
@@ -27,7 +28,7 @@ type
 implementation
 
 uses
-	SysUtils, Windows;
+	Windows;
 
 type
 	TArgon2Friend = class(TArgon2);
@@ -138,17 +139,17 @@ begin
 		In the case of Blake2b, we will ask the hash to give us 64-bytes of digest material (the maximum)
 	}
 
+	//Initialize input array, which is the byte sequence 00 01 02 ... FD FE FF (255 bytes)
+	for i := 0 to 255 do
+		input[i] := i;
+
 	//Initialize the hash key, which is the byte sequence 00 01 02 ... 3E 3F (64-bytes; the maximum number of bytes)
 	for i := 0 to 63 do
 		key[i] := i;
 
 	for i := 0 to 255 do
 	begin
-		if i > 0 then
-			input[i-1] := Byte(i-1);
-
 		actual := TArgon2Friend.HashData(input[0], i, 64, key[0], 64);
-
 		expected := Self.HexStringToBytes(Self.GetBlake2BKeyedTestVector(i));
 
 		Self.CheckEquals(Length(Expected), Length(actual), 'Actual hash length is wrong');
@@ -156,11 +157,9 @@ begin
 	end;
 end;
 
-procedure TArgon2Tests.HashAlgorithm_Blake2b_RFC;
+procedure TArgon2Tests.HashAlgorithm_Blake2b_RFCAppendixA;
 var
-	hash: IHashAlgorithm;
 	s: AnsiString;
-	m: array[0..2] of Byte;
 	expected: TBytes;
 	actual: TBytes;
 begin
@@ -192,7 +191,6 @@ var
 	input: array[0..255] of Byte;
 	actual: TBytes;
 	expected: TBytes;
-	hash: IHashAlgorithm;
 	i: Integer;
 begin
 	{
@@ -209,13 +207,13 @@ begin
 		The expected result of each sequence is given in the array
 		In the case of Blake2b, we will ask the hash to give us 64-bytes of digest material (the maximum)
 	}
+	//Initialize input array, which is the byte sequence 00 01 02 ... FD FE FF (255 bytes)
+	for i := 0 to 255 do
+		input[i] := i;
+
 	for i := 0 to 255 do
 	begin
-		if i > 0 then
-			input[i-1] := Byte(i-1);
-
 		actual := TArgon2Friend.HashData(input[0], i, 64, Pointer(nil)^, 0);
-
 		expected := Self.HexStringToBytes(GetBlake2BUnkeyedTestVector(i));
 
 		Self.CheckEquals(Length(Expected), Length(actual), 'Actual hash length is wrong');
@@ -247,7 +245,9 @@ end;
 
 function TArgon2Tests.GetBlake2bUnkeyedTestVector(Index: Integer): string;
 begin
-	//Why not use the array? Because that many strings of that size expose bugs in the compiler and it starts to crash
+//	https://github.com/BLAKE2/BLAKE2/blob/master/csharp/Blake2Sharp.Tests/TestVectors.cs
+
+	//Why not use the array of strings? Because that many strings of that size expose bugs in the compiler and it starts to crash.
 	//	UnkeyedBlake2B: array[0..255] of string = (
 	case Index of
 	000: Result := '786A02F742015903C6C6FD852552D272912F4740E15847618A86E217F71F5419D25E1031AFEE585313896444934EB04B903A685B1448B755D56F701AFE9BE2CE';
@@ -514,6 +514,8 @@ end;
 
 function TArgon2Tests.GetBlake2bKeyedTestVector(Index: Integer): string;
 begin
+//	https://github.com/BLAKE2/BLAKE2/blob/master/csharp/Blake2Sharp.Tests/TestVectors.cs
+
 //	KeyedBlake2B: array[0..255] of string = (
 	case Index of
 	000: Result := '10EBB67700B1868EFB4417987ACF4690AE9D972FB7A590C2F02871799AAA4786B5E996E8F0F4EB981FC214B005F42D2FF4233499391653DF7AEFCBC13FC51568';
@@ -834,26 +836,81 @@ begin
 	CheckEquals($C1C82FAA, actual);
 end;
 
+procedure TArgon2Tests.HashAlgorithm_Blake2b_Splits;
+var
+	input: array[0..255] of Byte;
+	actual: TBytes;
+	expected: TBytes;
+	i: Integer;
+	len: Integer;
+	hasher: IHashAlgorithm;
+	hash0, hash1: TBytes;
+	split1, split2: Integer;
+begin
+	{
+		https://github.com/BLAKE2/BLAKE2/blob/master/csharp/Blake2Sharp.Tests/SequentialTests.cs
+
+		We test hashing data in both:
+			- one complete chunk
+			- three separate chunks
+
+					 1111111111222222222233333333334
+		01234567890123456789012345678901234567890
+		|          ^                  ^         |
+		start   split1            split2       len
+
+		We don't test against some external reference; only that it can hash chunks of different sizes and get the
+		same answer as a single large hash.
+	}
+
+	//Initialize input array, which is the byte sequence 00 01 02 ... FD FE FF (255 bytes)
+	for i := 0 to 255 do
+		input[i] := i;
+
+	for len := 0 to 255 do
+	begin
+		hash0 := TArgon2Friend.HashData(input[0], len, 64, nil^, 0); //default digest size is 64 bytes
+
+		for split1 := 0 to len do
+		begin
+			for split2 := split1 to len do
+			begin
+				hasher := TArgon2Friend.CreateHash('Blake2b', 64, Pointer(nil)^, 0); //64 byte digest, no key
+				hasher.HashData(input[0], split1);
+				hasher.HashData(input[split1], split2-split1);
+				hasher.HashData(input[split2], len-split2);
+				hash1 := hasher.Finalize;
+
+				Self.CheckEquals(Length(hash0), Length(hash1), 'Actual hash length is wrong');
+				Self.CheckEqualsMem(Pointer(expected), Pointer(actual), Length(actual), 'Hash '+IntToStr(len));
+			end;
+		end;
+	end;
+end;
+
 {$OVERFLOWCHECKS OFF}
-procedure TArgon2Tests.HashAlgorithm_Blake2b_SelfTest;
+procedure TArgon2Tests.HashAlgorithm_Blake2b_RFCAppendixE;
 
 const
-	DataLengths: array[0..5] of Integer = (0, 3, 128, 129, 255, 1024);
+	BufferLengths: array[0..5] of Integer = (0, 3, 128, 129, 255, 1024);
 	KeyLengths: array[0..3] of Integer = (20, 32, 48, 64);
 var
 	runningHash: IHashAlgorithm;
 	i, j: Integer;
-	dataLen, keyLen, hashLen: Integer;
-	data: array[0..1023] of Integer;
-	key: array[0..63] of Integer;
+	bufferLength, keyLen, hashLen: Integer;
+	data: TBytes;
+	key: TBytes;
 	digest: TBytes;
 	expected: TBytes;
 
-	procedure GenerateSequence(var buffer: array of Integer; bufferLen: Integer);
+	function GenerateSequence(bufferLen: Integer): TBytes;
 	var
 		a, b, t: Cardinal;
 		n: Integer;
 	begin
+		SetLength(Result, bufferLen);
+
+		//Fill n bytes of Buffer with a deterministic sequence (Fibonacci generator)
 		a := $DEAD4BAD * Cardinal(bufferLen);
 		b := 1;
 
@@ -863,40 +920,45 @@ var
 			a := b;
 			b := t;
 
-			buffer[n] := (t shr 24);
+			Result[n] := (t shr 24) and $ff;
 		end;
 
 	end;
 begin
 	{
-		From Appendix E of the RFC.  My god they need to get someone who can write clearer code
+		From RFC7693 - The BLAKE2 Cryptographic Hash and Message Authentication Code (MAC)
+		Appendix E.  BLAKE2b and BLAKE2s Self-Test Module C Source
+		https://tools.ietf.org/html/rfc7693#appendix-E
+
+		My god they need to get someone who can write clearer code.
+
+		My version of this test fails. Since everything else works out correctly, i can only assume that
+		i'm misunderstanding something about what their horrible reference code is trying to do.
+		Perhaps it's something as silly as the Fibonacci generator; or integer overflow
 	}
 	runningHash := TArgon2Friend.CreateHash('Blake2b', 32, Pointer(nil)^, 0); //32 byte digest, no key
 
 	//For each key/hash length we want to try
-	for i := 0 to 3 do
+	for i := 0 to 3 do //20, 32, 48, 64
 	begin
-		hashLen := KeyLengths[i];
-		keyLen := KeyLengths[i];
+		hashLen := KeyLengths[i]; //20, 32, 48, 64
 
-		//For each buffer size we want to try
+		//For each input buffer size we want to try
 		for j := 0 to 5 do
 		begin
-			dataLen := DataLengths[j];
-
-			//Fill the data buffer with dataLen bytes of data
-			GenerateSequence(data, dataLen);
+			//Fill the data buffer with bufferLength bytes of data
+			bufferLength := BufferLengths[j]; //0, 3, 128, 129, 255, 102
+			data := GenerateSequence(bufferLength);
 
 			//Hash the data (with no key), and add the digest to our running hash
-			digest := TArgon2Friend.HashData(data, dataLen, hashLen, Pointer(nil)^, 0);
-			runningHash.HashData(digest[0], hashLen);
+			digest := TArgon2Friend.HashData(data, bufferLength, hashLen, Pointer(nil)^, 0);
+			runningHash.HashData(digest[0], hashLen); //Add the digest to our running hash
 
-			//Generate a sequence to use as a key
-			GenerateSequence(key, keyLen);
-
-			//Hash the data (with the generated key), and add the digest to our running hash
-			digest := TArgon2Friend.HashData(data, dataLen, hashLen, key, keyLen);
-			runningHash.HashData(digest[0], hashLen);
+			//Hash the data (with a generated key), and add the digest to our running hash
+			keyLen  := hashLen;
+			key := GenerateSequence(keyLen); //Generate a sequence to use as a key
+			digest := TArgon2Friend.HashData(data, bufferLength, hashLen, key, keyLen);
+			runningHash.HashData(digest[0], hashLen); //Add the digest to our running hash
 		end;
 	end;
 

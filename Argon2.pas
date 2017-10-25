@@ -97,12 +97,20 @@ type
 		class function CheckPassword(const password: UnicodeString; const expectedHashString: string; out PasswordRehashNeeded: Boolean): Boolean; overload;
 	end;
 
-function ROR64(const Value: Int64; const n: Integer): Int64;
+function ROR64(const Value: Int64; const n: Integer): Int64; //rotate right
 
 implementation
 
+{$IFDEF UnitTests}
+	{$DEFINE Argon2UnitTests}
+{$ENDIF}
+
+{$IFDEF NoArgon2UnitTests}
+	{$UNDEF Argon2UnitTests}
+{$ENDIF}
+
 uses
-	{$IFDEF ScryptUnitTests}Argon2Tests,{$ENDIF}
+	{$IFDEF Argon2UnitTests}Argon2Tests,{$ENDIF}
 	{$IFDEF MSWINDOWS}Windows, ComObj, ActiveX,{$ENDIF}
 	Math;
 
@@ -567,7 +575,7 @@ function TArgon2.TryParseHashString(HashString: string;
 var
 	tokens: TStringDynArray;
 	options: TStringDynArray;
-	parameters: string;
+//	parameters: string;
 	a: string;
 	b: Integer;
 
@@ -715,9 +723,7 @@ procedure TBlake2b.BlakeCompress(const m: PBlake2bBlockArray; cbBytesProcessed: 
 var
 	V: TBlake2bBlockArray;  //local work vector
 	S: array[0..15] of Integer; //current round message mixing schedule
-	i, j: Integer; //indexes
-	a, b, c, d: Integer;
-	x, y: Integer;
+	i: Integer;
 const
 	r = 12; //The number of rounds (Blake2b: 12, Blake2s: 10)
 begin
@@ -758,8 +764,6 @@ begin
 end;
 
 procedure TBlake2b.BlakeMix(var Va, Vb, Vc, Vd: UInt64; const x, y: Int64);
-var
-	t1, t2: Int64;
 begin
 	{
 		The Mixing primitive function mixes two input words, "x" and "y",
@@ -912,6 +916,9 @@ var
 	i: Int64Rec absolute Value;
 	r: Int64Rec absolute Result;
 begin
+	{
+		Rotate-right
+	}
 	case n of
 	32:
 		begin
