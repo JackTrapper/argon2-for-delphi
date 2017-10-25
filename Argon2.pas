@@ -831,7 +831,7 @@ end;
 
 procedure TBlake2b.HashData(const Buffer; BufferLen: Integer);
 var
-	V: array[0..15] of Int64; //intermediate work vector
+//	V: array[0..15] of Int64; //intermediate work vector
 	pChunk: PBlake2bBlockArray;
 	cbProcessed: Int64;
 	cbRemaining: Int64;
@@ -955,9 +955,8 @@ procedure TBlake2bOptimized.BlakeCompress(const m: PBlake2bBlockArray; cbBytesPr
 var
 	v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14, v15: Int64;
 	S: PVector16i; //current round message mixing schedule
-	i, j: Integer; //indexes
+	i: Integer; //indexes
 	t1, t2, t3, t4: UInt64Rec;
-	s1, s2, s3, s4: LongWord; //swap temp
 const
 	r = 12; //The number of rounds (Blake2b: 12, Blake2s: 10)
 begin
