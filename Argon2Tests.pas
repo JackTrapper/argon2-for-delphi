@@ -12,6 +12,7 @@ type
 		function GetTimestamp: Int64;
 		function GetBlake2bUnkeyedTestVector(Index: Integer): string;
 		function GetBlake2bKeyedTestVector(Index: Integer): string;
+		procedure CheckEqualsBytes(ExpectedBytes, ActualBytes: TBytes);
 	published
 		procedure Test_ROR64;
 		procedure Blake2b_SpeedTest;
@@ -21,8 +22,9 @@ type
 		procedure HashAlgorithm_Blake2b_TestVectors;  //from C# reference implementation on GitHub
 		procedure HashAlgorithm_Blake2b_KeyedTestVectors; //from C# reference implementation on GitHub
 		procedure HashAlgorithm_Blake2b_Splits;
-
 		procedure HashAlgorithm_Blake2b_SMHasher;
+
+		procedure Test_ParseHashString;
 	end;
 
 implementation
@@ -152,8 +154,7 @@ begin
 		actual := TArgon2Friend.HashData(input[0], i, 64, key[0], 64);
 		expected := Self.HexStringToBytes(Self.GetBlake2BKeyedTestVector(i));
 
-		Self.CheckEquals(Length(Expected), Length(actual), 'Actual hash length is wrong');
-		Self.CheckEqualsMem(Pointer(expected), Pointer(actual), Length(actual), 'Hash '+IntToStr(i));
+		CheckEqualsBytes(Expected, actual);
 	end;
 end;
 
@@ -181,9 +182,7 @@ begin
 			'7D 87 C5 39 2A AB 79 2D C2 52 D5 DE 45 33 CC 95'+
 			'18 D3 8A A8 DB F1 92 5A B9 23 86 ED D4 00 99 23');
 
-
-	Self.CheckEquals(Length(Expected), Length(actual), 'Actual hash length is wrong');
-	Self.CheckEqualsMem(Pointer(expected), Pointer(actual), Length(actual));
+	CheckEqualsBytes(expected, actual);
 end;
 
 procedure TArgon2Tests.HashAlgorithm_Blake2b_TestVectors;
@@ -216,9 +215,62 @@ begin
 		actual := TArgon2Friend.HashData(input[0], i, 64, Pointer(nil)^, 0);
 		expected := Self.HexStringToBytes(GetBlake2BUnkeyedTestVector(i));
 
-		Self.CheckEquals(Length(Expected), Length(actual), 'Actual hash length is wrong');
-		Self.CheckEqualsMem(Pointer(expected), Pointer(actual), Length(actual), 'Hash '+IntToStr(i));
+		CheckEqualsBytes(expected, actual);
 	end;
+end;
+
+procedure TArgon2Tests.Test_ParseHashString;
+
+	procedure t(HashString: string; ExpectedResult: Boolean; ExpectedAlgorithm: string;
+			ExpectedVersion, ExpectedMemoryFactor, ExpectedIterations, ExpectedParallelism: Integer;
+			strExpectedSalt, strExpectedData: string);
+	var
+		a2: TArgon2;
+		actualAlgorithm: string;
+		actualResult: Boolean;
+		actualVersion, actualMemoryFactor, actualIterations, actualParallelism: Integer;
+		actualSalt, actualData: TBytes;
+		expectedSalt, expectedData: TBytes;
+	begin
+		a2 := TArgon2.Create;
+		try
+			actualResult := TArgon2Friend(a2).TryParseHashString(HashString,
+					{out}actualAlgorithm, {out}actualVersion, {out}actualIterations, {out}actualMemoryFactor, {out}actualParallelism,
+					{out}actualSalt, {out}actualData);
+		finally
+			a2.free;
+		end;
+
+		CheckEquals(expectedResult, actualResult);
+		if not actualResult then
+			Exit;
+
+		CheckEquals(expectedAlgorithm,    actualAlgorithm);
+		CheckEquals(ExpectedVersion,      actualVersion);
+		CheckEquals(ExpectedMemoryFactor, actualMemoryFactor);
+		CheckEquals(ExpectedIterations,   actualIterations);
+		CheckEquals(ExpectedParallelism,  actualParallelism);
+
+		expectedSalt := HexStringToBytes(strExpectedSalt);
+		CheckEqualsBytes(ExpectedSalt, actualSalt);
+
+		expectedData := HexStringToBytes(strExpectedData);
+		CheckEqualsBytes(ExpectedData, actualData);
+	end;
+begin
+{
+	HashString:		$argon2i$v=19$m=65536,t=2,p=4$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG
+
+		Algorithm:       "argon2i"
+		Version:          19
+		Memory (m):       65536 (KiB)
+		Iterations (t):   2
+		Parallelism (p):  4
+		Salt:             736F6D6573616c74
+		Data:             45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6
+}
+	t('$argon2i$v=19$m=65536,t=2,p=4$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG',
+			True, 'argon2i', 19, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
 end;
 
 procedure TArgon2Tests.Test_ROR64;
@@ -510,6 +562,16 @@ begin
 		Result := '';
 	end;
 
+end;
+
+procedure TArgon2Tests.CheckEqualsBytes(ExpectedBytes, ActualBytes: TBytes);
+begin
+	CheckEquals(Length(ExpectedBytes), Length(ActualBytes));
+
+	if Length(ActualBytes) = 0 then
+		Exit;
+
+	CheckEqualsMem(Pointer(ExpectedBytes), Pointer(ActualBytes), Length(ActualBytes));
 end;
 
 function TArgon2Tests.GetBlake2bKeyedTestVector(Index: Integer): string;
@@ -881,8 +943,7 @@ begin
 				hasher.HashData(input[split2], len-split2);
 				hash1 := hasher.Finalize;
 
-				Self.CheckEquals(Length(hash0), Length(hash1), 'Actual hash length is wrong');
-				Self.CheckEqualsMem(Pointer(expected), Pointer(actual), Length(actual), 'Hash '+IntToStr(len));
+				CheckEqualsBytes(expected, actual);
 			end;
 		end;
 	end;
@@ -967,8 +1028,7 @@ begin
 
 	expected := Self.HexStringToBytes('C23A7800D98123BD 10F506C61E29DA56 03D763B8BBAD2E73 7F5E765A7BCCD475');
 
-	CheckEquals(Length(expected), Length(digest), 'Lengths of digest arrays do not match');
-	CheckEqualsMem(Pointer(expected), Pointer(digest), Length(digest), 'Digest does not match');
+	CheckEqualsBytes(expected, digest);
 end;
 {$OVERFLOWCHECKS ON}
 

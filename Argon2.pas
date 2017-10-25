@@ -579,8 +579,6 @@ var
 	a: string;
 	b: Integer;
 
-
-
 	function TryParseAB(const AeqB: string; out sName: string; nValue: Integer): Boolean;
 	var
 		lr: TStringDynArray;
@@ -659,12 +657,12 @@ begin
 		MemoryFactor := b;
 
 		//"t=2"
-		if not TryParseAB(options[0], {out}a, {out}b) then Exit;
+		if not TryParseAB(options[1], {out}a, {out}b) then Exit;
 		Iterations := b;
 
 		//"p=4"
-		if not TryParseAB(options[0], {out}a, {out}b) then Exit;
-      Parallelism := 4;
+		if not TryParseAB(options[2], {out}a, {out}b) then Exit;
+		Parallelism := b;
 
 	Salt := TArgon2.Base64Decode(tokens[4]);
 	Data := TArgon2.Base64Decode(tokens[5]);
