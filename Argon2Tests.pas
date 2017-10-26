@@ -25,6 +25,7 @@ type
 		procedure HashAlgorithm_Blake2b_SMHasher;
 
 		procedure Test_ParseHashString;
+		procedure Test_ParseHashString_OtherParameterOrders;
 	end;
 
 implementation
@@ -79,6 +80,7 @@ var
 		t1, t2: Int64;
 		bestTime: Int64;
 		i: Integer;
+		speed: Real;
 	begin
 		hash := TArgon2Friend.CreateObject(HashAlgorithmName) as IHashAlgorithm;
 
@@ -100,15 +102,19 @@ var
 		end;
 		OutputDebugString('SAMPLING OFF');
 
+		speed := Length(data) / (bestTime/freq); //bytes/s
 
-		Status(Format('%s		%.3f MB/s', [HashAlgorithmName, (Length(data)/1024/1024) / (bestTime/freq)]));
+		Status(Format('%s		%.3f MB/s	%.0f ns/byte', [
+			HashAlgorithmName,
+			speed/1024/1024,
+			1000000000/speed]));
 	end;
 begin
 	if not QueryPerformanceFrequency(freq) then
 		freq := -1;
 	SetLength(data, 4*1024*1024); //1 MB
 
-	Status(Format('%s		%s', ['Algorithm', 'Speed (MB/s)']));
+	Status(Format('%s		%s	%s', ['Algorithm', 'Speed (MB/s)',	'ns/byte']));
 	Test('Blake2b');
 end;
 
@@ -269,8 +275,95 @@ begin
 		Salt:             736F6D6573616c74
 		Data:             45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6
 }
-	t('$argon2i$v=19$m=65536,t=2,p=4$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG',
-			True, 'argon2i', 19, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+	t('$argon2i$v=19$m=65536,t=2,p=4$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 19, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+
+	//Is argon 2d a thing?
+	t('$argon2d$v=19$m=65536,t=2,p=4$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2d', 19, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+
+	//Is argon 2id a thing?
+	t('$argon2id$v=19$m=65536,t=2,p=4$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2id', 19, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+
+	//different cases of the parameters
+	t('$argon2i$v=19$M=65536,T=2,P=4$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 19, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+end;
+
+procedure TArgon2Tests.Test_ParseHashString_OtherParameterOrders;
+	procedure t(HashString: string; ExpectedResult: Boolean; ExpectedAlgorithm: string;
+			ExpectedVersion, ExpectedMemoryFactor, ExpectedIterations, ExpectedParallelism: Integer;
+			strExpectedSalt, strExpectedData: string);
+	var
+		a2: TArgon2;
+		actualAlgorithm: string;
+		actualResult: Boolean;
+		actualVersion, actualMemoryFactor, actualIterations, actualParallelism: Integer;
+		actualSalt, actualData: TBytes;
+		expectedSalt, expectedData: TBytes;
+	begin
+		a2 := TArgon2.Create;
+		try
+			actualResult := TArgon2Friend(a2).TryParseHashString(HashString,
+					{out}actualAlgorithm, {out}actualVersion, {out}actualIterations, {out}actualMemoryFactor, {out}actualParallelism,
+					{out}actualSalt, {out}actualData);
+		finally
+			a2.free;
+		end;
+
+		CheckEquals(expectedResult, actualResult);
+		if not actualResult then
+			Exit;
+
+		CheckEquals(expectedAlgorithm,    actualAlgorithm);
+		CheckEquals(ExpectedVersion,      actualVersion);
+		CheckEquals(ExpectedMemoryFactor, actualMemoryFactor);
+		CheckEquals(ExpectedIterations,   actualIterations);
+		CheckEquals(ExpectedParallelism,  actualParallelism);
+
+		expectedSalt := HexStringToBytes(strExpectedSalt);
+		CheckEqualsBytes(ExpectedSalt, actualSalt);
+
+		expectedData := HexStringToBytes(strExpectedData);
+		CheckEqualsBytes(ExpectedData, actualData);
+	end;
+begin
+{
+	HashString:		$argon2i$v=19$m=65536,t=2,p=4$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG
+
+		Algorithm:       "argon2i"
+		Version:          19
+		Memory (m):       65536 (KiB)
+		Iterations (t):   2
+		Parallelism (p):  4
+		Salt:             736F6D6573616c74
+		Data:             45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6
+}
+	{
+		Other order of parameters
+			mtp
+			mpt
+			tmp
+			tpm
+			pmt
+			ptm
+	}
+	t('$argon2i$v=19$m=65536,t=2,p=4$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 19, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+	t('$argon2i$v=19$m=65536,p=4,t=2$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 19, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+
+	t('$argon2i$v=19$t=2,m=65536,p=4$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 19, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+	t('$argon2i$v=19$t=2,p=4,m=65536$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 19, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+
+	t('$argon2i$v=19$p=4,m=65536,t=2$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 19, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+	t('$argon2i$v=19$p=4,t=2,m=65536$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 19, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+
+	//uppercase
+	t('$argon2i$v=19$M=65536,T=2,P=4$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 19, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+	t('$argon2i$v=19$M=65536,P=4,T=2$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 19, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+
+	t('$argon2i$v=19$T=2,M=65536,P=4$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 19, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+	t('$argon2i$v=19$T=2,P=4,M=65536$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 19, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+
+	t('$argon2i$v=19$P=4,M=65536,T=2$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 19, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+	t('$argon2i$v=19$P=4,T=2,M=65536$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 19, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+
 end;
 
 procedure TArgon2Tests.Test_ROR64;

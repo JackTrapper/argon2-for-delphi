@@ -575,9 +575,9 @@ function TArgon2.TryParseHashString(HashString: string;
 var
 	tokens: TStringDynArray;
 	options: TStringDynArray;
-//	parameters: string;
 	a: string;
 	b: Integer;
+	i: Integer;
 
 	function TryParseAB(const AeqB: string; out sName: string; nValue: Integer): Boolean;
 	var
@@ -638,7 +638,9 @@ begin
 		//tokens[5] ==> "RdescudvJCsgt3ub+b+dWRWJTmaaJObG"
 
 	if Length(tokens) < 6 then Exit;
-	if (not AnsiSameText(tokens[1], 'argon2i')) and (not AnsiSameText(tokens[1], 'argon2d')) then Exit;
+	if (not AnsiSameText(tokens[1], 'argon2i')) and
+			(not AnsiSameText(tokens[1], 'argon2d')) and
+			(not AnsiSameText(tokens[1], 'argon2id')) then Exit;
 
 	Algorithm := tokens[1];
 
@@ -649,20 +651,25 @@ begin
 	Version := b;
 
 	//"m=65536,t=2,p=4"
+	//	m: MemoryFactor
+	//	t: Iterations
+	//	p: Parallelism
 	options := Self.Tokenize(tokens[3], ',');
 	if Length(options) <> 3 then Exit;
-
+	for i := 0 to 2 do
+	begin
 		//"m=65536"
-		if not TryParseAB(options[0], {out}a, {out}b) then Exit;
-		MemoryFactor := b;
+		if not TryParseAB(options[i], {out}a, {out}b) then Exit;
 
-		//"t=2"
-		if not TryParseAB(options[1], {out}a, {out}b) then Exit;
-		Iterations := b;
-
-		//"p=4"
-		if not TryParseAB(options[2], {out}a, {out}b) then Exit;
-		Parallelism := b;
+		if SameText(a, 'm') then
+			MemoryFactor := b
+		else if SameText(a, 't') then
+			Iterations := b
+		else if SameText(a, 'p') then
+			Parallelism := b
+		else
+			Exit;
+	end;
 
 	Salt := TArgon2.Base64Decode(tokens[4]);
 	Data := TArgon2.Base64Decode(tokens[5]);
