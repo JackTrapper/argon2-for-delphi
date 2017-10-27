@@ -92,9 +92,9 @@ type
 		class function HashData(const Data; DataLen: Integer; cbHashLen: Integer; const Key; cbKeyLen: Integer): TBytes;
 	public
 		//Hashes a password into the standard Argon2 OpenBSD password-file format
-		class function HashPassword(const password: UnicodeString): string; overload;
-		class function HashPassword(const password: UnicodeString; const Iterations, MemoryFactor, Parallelism: Integer): string; overload;
-		class function CheckPassword(const password: UnicodeString; const expectedHashString: string; out PasswordRehashNeeded: Boolean): Boolean; overload;
+		class function HashPassword(const Password: UnicodeString): string; overload;
+		class function HashPassword(const Password: UnicodeString; const Iterations, MemoryFactor, Parallelism: Integer): string; overload;
+		class function CheckPassword(const Password: UnicodeString; const expectedHashString: string; out PasswordRehashNeeded: Boolean): Boolean; overload;
 	end;
 
 function ROR64(const Value: Int64; const n: Integer): Int64; //rotate right
@@ -346,7 +346,7 @@ const
 			(10,  2,  8,  4,  7,  6,  1,  5, 15, 11,  9, 14,  3, 12, 13,  0)
 	);
 
-class function TArgon2.CheckPassword(const password: UnicodeString; const expectedHashString: string; out PasswordRehashNeeded: Boolean): Boolean;
+class function TArgon2.CheckPassword(const Password: UnicodeString; const expectedHashString: string; out PasswordRehashNeeded: Boolean): Boolean;
 begin
 	Result := False;
 	PasswordRehashNeeded := False;
@@ -461,7 +461,7 @@ begin
 
 end;
 
-class function TArgon2.HashPassword(const password: UnicodeString): string;
+class function TArgon2.HashPassword(const Password: UnicodeString): string;
 begin
 
 end;
@@ -475,7 +475,7 @@ begin
 	Result := hash.Finalize;
 end;
 
-class function TArgon2.HashPassword(const password: UnicodeString;
+class function TArgon2.HashPassword(const Password: UnicodeString;
   const Iterations, MemoryFactor, Parallelism: Integer): string;
 begin
 	{
