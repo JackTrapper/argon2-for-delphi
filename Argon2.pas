@@ -1,5 +1,9 @@
 unit Argon2;
 
+{
+	https://tools.ietf.org/html/draft-irtf-cfrg-argon2-03
+}
+
 {$IFDEF CONDITIONALEXPRESSIONS}
 	{$IF CompilerVersion >= 15} //15 = Delphi 7
 		{$DEFINE COMPILER_7_UP}
@@ -37,16 +41,80 @@ type
 	TBytes = array of Byte; //for old-fashioned Delphi 5, we have to do it ourselves
 	IInterface = IUnknown;
 	TStringDynArray = array of String;
+
 	EOSError = EWin32Error;
 const
 	RaiseLastOSError: procedure = SysUtils.RaiseLastWin32Error; //First appeared in Delphi 7
 {$ENDIF}
 
+
+
 type
-	UInt64Rec = packed record
-		case Byte of
-		0: (Lo, Hi: Cardinal;);
-		1: (Value: Int64;);
+	TArgon2 = class(TObject)
+	private
+		FPassword: TBytes;
+		FMemorySizeKB: Integer;
+		FDegreeOfParallelism: Integer;
+		FIterations: Integer;
+		FSalt: TBytes;
+		FKnownSecret: TBytes;
+		FAssociatedData: TBytes;
+	protected
+		FHashType: Cardinal; //0=Argon2d, 1=Argon2i, 2=Argon2id
+		function GenerateInitialBlock(const Passphrase; PassphraseLength, DesiredNumberOfBytes: Integer): TBytes;
+		class procedure BurnBytes(var data: TBytes);
+		class function StringToUtf8(const Source: UnicodeString): TBytes;
+
+		class function Base64Encode(const data: array of Byte): string;
+		class function Base64Decode(const s: string): TBytes;
+
+		class function Tokenize(const s: string; Delimiter: Char): TStringDynArray;
+		class function GenRandomBytes(len: Integer; const data: Pointer): HRESULT;
+		function GenerateSalt: TBytes;
+		class function Hash(const Buffer; BufferLen: Integer; DigestSize: Cardinal): TBytes;
+
+		class function UnicodeStringToUtf8(const Source: UnicodeString): TBytes;
+
+		class function TimingSafeSameString(const Safe, User: string): Boolean;
+
+		procedure GetDefaultParameters(out Iterations, MemoryFactor, Parallelism: Integer);
+		function TryParseHashString(HashString: string; out Algorithm: string; out Version, Iterations, MemoryFactor, Parallelism: Integer; out Salt: TBytes; out Data: TBytes): Boolean;
+		function FormatPasswordHash(const Algorithm: string; Version: Integer; const Iterations, MemoryFactor, Parallelism: Integer; const Salt, DerivedBytes: array of Byte): string;
+
+		class function CreateHash(AlgorithmName: string; cbHashLen: Integer; const Key; const cbKeyLen: Integer): IUnknown;
+	public
+		constructor Create;
+
+		function GetBytes(const Passphrase; PassphraseLength: Integer; DesiredNumberOfBytes: Integer): TBytes;
+
+		property Iterations: Integer read FIterations write FIterations; //must be at least 1 iteration
+		property MemorySizeKB: Integer read FMemorySizeKB write FMemorySizeKB; //must be at least 4 KB
+		property DegreeOfParallelism: Integer read FDegreeOfParallelism write FDegreeOfParallelism; //must be at least 1 thread
+		property Salt: TBytes read FSalt write FSalt;
+		property KnownSecret: TBytes read FKnownSecret write FKnownSecret;
+		property AssociatedData: TBytes read FAssociatedData write FAssociatedData;
+
+		class function DeriveBytes(const Passphrase; PassphraseLength: Integer; const Salt: TBytes; Iterations, MemorySizeKB, Parallelism: Integer; nDesiredBytes: Integer): TBytes;
+
+		//Hashes a password into the standard Argon2 OpenBSD password-file format
+		class function HashPassword(const Password: UnicodeString): string; overload;
+		class function HashPassword(const Password: UnicodeString; const Iterations, MemorySizeKB, Parallelism: Integer): string; overload;
+		class function CheckPassword(const Password: UnicodeString; const ExpectedHashString: string; out PasswordRehashNeeded: Boolean): Boolean; overload;
+
+		class function CreateObject(ObjectName: string): IUnknown;
+	end;
+
+	TArgon2i = class(TArgon2)
+	public
+
+	end;
+
+	TArgon2d = class(TArgon2)
+	public
+	end;
+
+	TArgon2id = class(TArgon2)
+	public
 	end;
 
 	//As basic of a Hash interface as you can get
@@ -64,37 +132,11 @@ type
 		property DigestSize: Integer read GetDigestSize;
 	end;
 
-
-type
-	TBlake2bBlockArray = array[0..15] of UInt64; //operates a lot on things that are 16 "words" long (where a word in Blake2b is 64-bit)
-	PBlake2bBlockArray = ^TBlake2bBlockArray;
-
-type
-	TArgon2 = class(TObject)
-	protected
-		class function Base64Encode(const data: array of Byte): string;
-		class function Base64Decode(const s: string): TBytes;
-
-		class function Tokenize(const s: string; Delimiter: Char): TStringDynArray;
-		class function GenRandomBytes(len: Integer; const data: Pointer): HRESULT;
-		function GenerateSalt: TBytes;
-
-		class function UnicodeStringToUtf8(const Source: UnicodeString): TBytes;
-
-		class function TimingSafeSameString(const Safe, User: string): Boolean;
-
-		procedure GetDefaultParameters(out Iterations, MemoryFactor, Parallelism: Integer);
-		function TryParseHashString(HashString: string; out Algorithm: string; out Version, Iterations, MemoryFactor, Parallelism: Integer; out Salt: TBytes; out Data: TBytes): Boolean;
-		function FormatPasswordHash(const Algorithm: string; Version: Integer; const Iterations, MemoryFactor, Parallelism: Integer; const Salt, DerivedBytes: array of Byte): string;
-
-		class function CreateObject(ObjectName: string): IUnknown;
-		class function CreateHash(AlgorithmName: string; cbHashLen: Integer; const Key; const cbKeyLen: Integer): IHashAlgorithm;
-		class function HashData(const Data; DataLen: Integer; cbHashLen: Integer; const Key; cbKeyLen: Integer): TBytes;
-	public
-		//Hashes a password into the standard Argon2 OpenBSD password-file format
-		class function HashPassword(const Password: UnicodeString): string; overload;
-		class function HashPassword(const Password: UnicodeString; const Iterations, MemoryFactor, Parallelism: Integer): string; overload;
-		class function CheckPassword(const Password: UnicodeString; const expectedHashString: string; out PasswordRehashNeeded: Boolean): Boolean; overload;
+	IHmacAlgorithm = interface(IInterface)
+		['{815787A8-D5E7-41C0-9F23-DF30D1532C49}']
+		function GetDigestSize: Integer;
+		function HashData(const Key; KeyLen: Integer; const Data; DataLen: Integer): TBytes;
+		property DigestSize: Integer read GetDigestSize;
 	end;
 
 function ROR64(const Value: Int64; const n: Integer): Int64; //rotate right
@@ -110,9 +152,13 @@ implementation
 {$ENDIF}
 
 uses
+	Classes,
 	{$IFDEF Argon2UnitTests}Argon2Tests,{$ENDIF}
 	{$IFDEF MSWINDOWS}Windows, ComObj, ActiveX,{$ENDIF}
 	Math;
+
+const
+	ARGON_VERSION: Cardinal = $13;
 
 {$IFDEF COMPILER_7_DOWN}
 function MAKELANGID(p, s: WORD): WORD;
@@ -130,13 +176,36 @@ type
 	EArgon2Exception = class(Exception);
 
 	HCRYPTPROV = THandle;
-//	HCRYPTHASH = THandle;
-//	HCRYPTKEY = THandle;
-//	ALG_ID = LongWord; //unsigned int
+
+	function StartsWith(s: string; StartingText: string): Boolean;
+	var
+		len: Integer;
+	begin
+		Result := False;
+
+		len := Length(StartingText);
+
+		if Length(s) < len then
+			Exit;
+
+		Result := (CompareString(LOCALE_INVARIANT, LINGUISTIC_IGNORECASE, PChar(s), len, PChar(StartingText), len) = CSTR_EQUAL);
+	end;
 
 function CryptAcquireContextW(out phProv: HCRYPTPROV; pszContainer: PWideChar; pszProvider: PWideChar; dwProvType: DWORD; dwFlags: DWORD): BOOL; stdcall; external advapi32;
 function CryptReleaseContext(hProv: HCRYPTPROV; dwFlags: DWORD): BOOL; stdcall; external advapi32;
 function CryptGenRandom(hProv: HCRYPTPROV; dwLen: DWORD; pbBuffer: Pointer): BOOL; stdcall; external advapi32;
+
+type
+	UInt64Rec = packed record
+		case Byte of
+		0: (Lo, Hi: Cardinal;);
+		1: (Value: UInt64;);
+	end;
+	PUInt64Rec = ^UInt64Rec;
+
+type
+	TBlake2bBlockArray = array[0..15] of UInt64; //operates a lot on things that are 16 "words" long (where a word in Blake2b is 64-bit)
+	PBlake2bBlockArray = ^TBlake2bBlockArray;
 
 { TBlake2b }
 type
@@ -144,13 +213,14 @@ type
 	private
 	protected
 		FDigestSize: Integer;
-		FKey: TBytes;
 		h: array[0..7] of Int64; //State vector
+		FBuffer: array[0..127] of Byte;
+		FBufferLength: Integer;
 		FProcessed: Int64;
 
 		procedure Burn;
 		procedure BlakeCompress(const m: PBlake2bBlockArray; cbBytesProcessed: Int64; IsFinalBlock: Boolean); virtual;
-		procedure BlakeMix(var Va, Vb, Vc, Vd: UInt64; const x, y: Int64);
+		procedure BlakeMix(var Va, Vb, Vc, Vd: UInt64; const x, y: Int64); inline;
 	public
 		constructor Create(const Key; cbKeyLen: Integer; cbHashLen: Integer);
 
@@ -226,8 +296,14 @@ begin
 
 		c1 := Char64(s[i  ]);
 		c2 := Char64(s[i+1]);
-		c3 := Char64(s[i+2]);
-		c4 := Char64(s[i+3]);
+		c3 := -1;
+		c4 := -1;
+		if (i+2) <= len then
+		begin
+			c3 := Char64(s[i+2]);
+			if (i+3) <= len then
+				c4 := Char64(s[i+3]);
+		end;
 		Inc(i, 4);
 
 		if (c1 = -1) or (c2 = -1) then
@@ -321,16 +397,27 @@ begin
 	Result := Result+EncodePacket(b1, b2, 0, len);
 end;
 
+class procedure TArgon2.BurnBytes(var data: TBytes);
+begin
+	if Length(data) <= 0 then
+		Exit;
+
+	FillChar(data[Low(data)], Length(data), 0);
+	SetLength(data, 0);
+end;
+
 const
-	IV: array[0..7] of Int64 = ( //Fortunately the Blake2 author didn't give the IV, choosing instead to link to an unrelated RFC and letting us guess what the IV is.
-			Int64($6A09E667F3BCC908),
-			Int64($BB67AE8584CAA73B),
-			Int64($3C6EF372FE94F82B),
-			Int64($A54FF53A5F1D36F1),
-			Int64($510E527FADE682D1),
-			Int64($9B05688C2B3E6C1F),
-			Int64($1F83D9ABFB41BD6B),
-			Int64($5BE0CD19137E2179)
+	//The Blake2 IV comes from the SHA2-512 IV.
+	//The values are the the fractional part of the square root of the first 8 primes (2, 3, 5, 7, 11, 13, 17, 19)
+	IV: array[0..7] of Int64 = (
+			Int64($6A09E667F3BCC908), //frac(sqrt(2))
+			Int64($BB67AE8584CAA73B), //frac(sqrt(3))
+			Int64($3C6EF372FE94F82B), //frac(sqrt(5))
+			Int64($A54FF53A5F1D36F1), //frac(sqrt(7))
+			Int64($510E527FADE682D1), //frac(sqrt(11))
+			Int64($9B05688C2B3E6C1F), //frac(sqrt(13))
+			Int64($1F83D9ABFB41BD6B), //frac(sqrt(17))
+			Int64($5BE0CD19137E2179)  //frac(sqrt(19))
 	);
 
 	SIGMA: array[0..9] of array[0..15] of Integer = (
@@ -346,13 +433,68 @@ const
 			(10,  2,  8,  4,  7,  6,  1,  5, 15, 11,  9, 14,  3, 12, 13,  0)
 	);
 
-class function TArgon2.CheckPassword(const Password: UnicodeString; const expectedHashString: string; out PasswordRehashNeeded: Boolean): Boolean;
+class function TArgon2.CheckPassword(const Password: UnicodeString; const ExpectedHashString: string; out PasswordRehashNeeded: Boolean): Boolean;
+var
+	ar: TArgon2;
+	algorithm: string;
+	version, iterations, memorySizeKB, parallelism: Integer;
+	salt, expected, actual: TBytes;
+	t1, t2, freq: Int64;
+	duration: Real;
 begin
 	Result := False;
 	PasswordRehashNeeded := False;
+
+	ar := TArgon2.Create;
+	try
+		if not ar.TryParseHashString(ExpectedHashString, {out}algorithm, {out}version, {out}iterations, {out}memorySizeKB, {out}parallelism, {out}salt, {out}expected) then
+			raise EArgon2Exception.Create('Could not parse password hash string');
+		try
+			QueryPerformanceCounter(t1);
+			actual := TArgon2.DeriveBytes(Password, Length(Password)*SizeOf(WideChar), salt, iterations, memorySizeKB, parallelism, 32);
+			QueryPerformanceCounter(t2);
+
+			if Length(actual) <> Length(expected) then
+				Exit;
+
+			Result := CompareMem(@expected[0], @actual[0], Length(expected));
+
+			if Result then
+			begin
+				//Only advertise a rehash being needed if they got the correct password.
+				//Don't want someone blindly re-hashing with a bad password because they forgot to check the result,
+				//or because they decided to handle "PasswordRehashNeeded" first.
+				if QueryPerformanceFrequency(freq) then
+				begin
+					duration := (t2-t1)/freq * 1000; //ms
+					if duration < 250 then
+						PasswordRehashNeeded := True;
+				end;
+			end;
+		finally
+			ar.BurnBytes(actual);
+			ar.BurnBytes(expected);
+		end;
+	finally
+		ar.Free;
+	end;
 end;
 
-class function TArgon2.CreateHash(AlgorithmName: string; cbHashLen: Integer; const Key; const cbKeyLen: Integer): IHashAlgorithm;
+constructor TArgon2.Create;
+begin
+	inherited Create;
+
+	SetLength(FPassword, 0);
+	FMemorySizeKB := 128*1024; //128 MB
+	FHashType := 1; //0=Argon2d, 1=Argon2i, 2=Argon2id
+	FDegreeOfParallelism := 1; //1 thread
+	FIterations := 1000; //1000 iterations
+	SetLength(FSalt, 0); //we can't generate salt for them; they need to know what it was
+	SetLength(FAssociatedData, 0);
+	SetLength(FKnownSecret, 0);
+end;
+
+class function TArgon2.CreateHash(AlgorithmName: string; cbHashLen: Integer; const Key; const cbKeyLen: Integer): IUnknown;
 begin
 	if AlgorithmName = 'Blake2b.Optimized' then
 		Result := TBlake2bOptimized.Create(Key, cbKeyLen, cbHashLen)
@@ -374,6 +516,38 @@ begin
 		Result := TBlake2bOptimized.Create(Pointer(nil)^, 0, 64)
 	else
 		raise EArgon2Exception.CreateFmt('Unknown object name "%s"', [ObjectName]);
+end;
+
+class function TArgon2.DeriveBytes(const Passphrase; PassphraseLength: Integer; const Salt: TBytes; Iterations, MemorySizeKB, Parallelism: Integer; nDesiredBytes: Integer): TBytes;
+var
+	ar: TArgon2;
+begin
+	{
+		Iterations (t): Number of iterations
+				Used to determine the running time independantly of the memory size
+				1 - 0x7FFFFFFF
+		Parallelism (p): Degree of Parallelism
+				Determines how many independant (but synchronizing) computational chains can be run.
+				1 - 0x00FFFFFF
+		MemorySizeKB (m): number of kilobyes
+				8p - 0x7FFFFFFF
+
+		Secret value (K): Serves as a key if necessary
+				0 - 32 bytes
+	}
+
+	//Unhelpfully, Argon2 doesn't
+	ar := TArgon2.Create();
+	try
+		ar.Iterations := Iterations;
+		ar.MemorySizeKB := MemorySizeKB;
+		ar.DegreeOfParallelism := Parallelism;
+		ar.Salt := Salt;
+
+		Result := ar.GetBytes(Passphrase, PassphraseLength, nDesiredBytes);
+	finally
+		ar.Free;
+	end;
 end;
 
 function TArgon2.FormatPasswordHash(const Algorithm: string; Version: Integer;
@@ -455,28 +629,163 @@ begin
 	Result := S_OK;
 end;
 
-procedure TArgon2.GetDefaultParameters(out Iterations, MemoryFactor,
-  Parallelism: Integer);
+type
+	TLane = class(TObject)
+	public
+		BlockCount: Integer;
+	end;
+
+function TArgon2.GetBytes(const Passphrase; PassphraseLength: Integer; DesiredNumberOfBytes: Integer): TBytes;
+var
+	lanes: array of TBytes;
+	i, j, s, l: Integer;
+	iref, jref: Integer;
+	segmentLength: Integer;
+	start: Integer;
+	currOffset, prevOffset: Integer;
+	prevLane: Integer;
+	c: Integer;
+	h0: TBytes;
+	columnCount, blockCount: Integer;
+const
+	SDesiredBytesMaxError = 'Argon2 only supports generating a maximum of 1,024 bytes (Requested %d bytes)';
+	SInvalidIterations = 'Argon2 hash requires at least 1 iteration (Requested %d)';
+	SInvalidMemorySize = 'Argon2 requires at least 4 KB to be used (Requested %d KB)';
+	SInvalidParallelism = 'Argon2 requires at one 1 thread (Requested %d parallelism)';
+begin
+	if DesiredNumberOfBytes > 1024 then
+		raise EArgon2Exception.CreateFmt(SDesiredBytesMaxError, [DesiredNumberOfBytes]);
+	if FIterations < 1 then
+		raise EArgon2Exception.CreateFmt(SInvalidIterations, [FIterations]);
+	if FMemorySizeKB < 4 then
+		raise EArgon2Exception.CreateFmt(SInvalidMemorySize, [FMemorySizeKB]);
+	if FDegreeOfParallelism < 1 then
+		raise EArgon2Exception.CreateFmt(SInvalidParallelism, [FDegreeOfParallelism]);
+
+	//Generate the initial 64-byte block h0
+	h0 := Self.GenerateInitialBlock(Passphrase, PassphraseLength, DesiredNumberOfBytes);
+
+	//Calculate number of 1 KiB blocks by rounding down memorySizeKB to the nearest multiple of 4*DegreeOfParallelism kilobytes
+	columnCount := memorySizeKB div 4 div FDegreeOfParallelism;
+	blockCount := columnCount * FDegreeOfParallelism;
+
+	//Allocate two-dimensional array of 1 KiB blocks (parallelism rows x columnCount columns)
+	SetLength(lanes, FDegreeOfParallelism);
+	for i := 0 to FDegreeOfParallelism-1 do
+		SetLength(lanes[i], columnCount*1024);
+
+	//Compute the first block (i.e. column zero) of each lane (i.e. row)
+	for i := 0 to FDegreeOfParallelism-1 do
+	begin
+//		lanes[i][0] := Hash(H0 || 0 || i);
+	end;
+
+	//Compute the second block (i.e. column one) of each lane (i.e. row)
+	for i := 0 to FDegreeOfParallelism-1 do //for each lane
+	begin
+//		lanes[i][1] := Hash(H0 || 1 || i);
+	end;
+
+	//Compute remaining columns of each lane
+	for i := 0 to FDegreeOfParallelism-1 do //for each row
+	begin
+		for j := 2 to columnCount-1 do //for each subsequent column
+		begin
+			//iref and jref indexes depend if it's Argon2i, Argon2d, or Argon2id (See section 3.4)
+			//GetBlockIndexes(i, j, {out}iref, {out}jref);
+			//Bi[j] = G(Bi[j-1], Biref[jref])
+		end;
+	end;
+
+end;
+
+function TArgon2.GenerateInitialBlock(const Passphrase; PassphraseLength: Integer; DesiredNumberOfBytes: Integer): TBytes;
+var
+	blake2b: IHashAlgorithm;
+	n: Integer;
+begin
+	blake2b := Self.CreateObject('Blake2b') as IHashAlgorithm;
+
+	blake2b.HashData(FDegreeOfParallelism, 4);
+	blake2b.HashData(DesiredNumberOfBytes, 4);
+	blake2b.HashData(FMemorySizeKB, 4);
+	blake2b.HashData(FIterations, 4);
+	blake2b.HashData(Cardinal(ARGON_VERSION), 4);
+	blake2b.HashData(FHashType, 4);
+
+	//Variable length items are prepended with their length
+	blake2b.HashData(PassphraseLength, 4);
+	blake2b.HashData(Passphrase, PassphraseLength);
+
+	n := Length(FSalt);
+	blake2b.HashData(n, 4);
+	blake2b.HashData(PByte(FSalt)^, Length(FSalt));
+
+	n := Length(FKnownSecret);
+	blake2b.HashData(n, 4);
+	blake2b.HashData(PByte(FKnownSecret)^, Length(FKnownSecret));
+
+	n := Length(FAssociatedData);
+	blake2b.HashData(n, 4);
+	blake2b.HashData(PByte(FAssociatedData)^, Length(FAssociatedData));
+
+	Result := blake2b.Finalize;
+end;
+
+
+procedure TArgon2.GetDefaultParameters(out Iterations, MemoryFactor, Parallelism: Integer);
 begin
 
 end;
 
 class function TArgon2.HashPassword(const Password: UnicodeString): string;
-begin
-
-end;
-
-class function TArgon2.HashData(const Data; DataLen, cbHashLen: Integer; const Key; cbKeyLen: Integer): TBytes;
 var
-	hash: IHashAlgorithm;
+	iterations, memorySizeKB, degreeOfParallelism: Integer;
 begin
-	hash := TArgon2.CreateHash('Blake2b', cbHashLen, Key, cbKeyLen);
-	hash.HashData( Data, DataLen);
-	Result := hash.Finalize;
+	iterations := 10000;      // 10,000 iterations
+	memorySizeKB := 128*1024; // 128 MB
+	degreeOfParallelism := 1; // 1 thread
+
+	Result := TArgon2.HashPassword(Password, iterations, memorySizeKB, degreeOfParallelism);
 end;
 
-class function TArgon2.HashPassword(const Password: UnicodeString;
-  const Iterations, MemoryFactor, Parallelism: Integer): string;
+class function TArgon2.Hash(const Buffer; BufferLen: Integer; DigestSize: Cardinal): TBytes;
+var
+	blake2b: IHashAlgorithm;
+	digest: TBytes;
+begin
+	{
+		This is a variable length hash function, that can generate digests up to 2^32 bytes
+	}
+	if DigestSize <= 64 then
+	begin
+		blake2b := Self.CreateObject('Blake2b') as IHashAlgorithm;
+		blake2b.HashData(Buffer, BufferLen);
+		Result := blake2b.Finalize;
+		if DigestSize < 64 then
+		begin
+			//Grab first DigestSize bytes
+			SetLength(digest, DigestSize);
+			Move(Result[0], digest[0], DigestSize);
+			Result := digest;
+		end;
+		Exit;
+	end;
+
+	raise ENotImplemented.Create('todo: digests over 64-bytes');
+
+	//For desired digest sizes over 64 bytes, we generate a series of 64-byte blocks, and use the first 32-bytes from each
+
+	//Number of whole blocks (knowing we're going to only use 32-bytes from each)
+
+
+end;
+
+class function TArgon2.HashPassword(const Password: UnicodeString; const Iterations, MemorySizeKB, Parallelism: Integer): string;
+var
+	salt, derivedBytes: TBytes;
+	utf8Password: TBytes;
+	ar: TArgon2;
 begin
 	{
 		Iterations (t): Number of iterations
@@ -485,16 +794,72 @@ begin
 		Parallelism (p): Degree of Parallelism
 				Determines how many independant (but synchronizing) computational chains can be run.
 				1 - 0x00FFFFFF
-
-		Tag Length (T): a number of bytes
-				1 - 0x7FFFFFFF
-
-		Memory Size (m): integer number of kilobyes
+		MemorySizeKB (m): power of two number of kilobyes (minimum of 8*Parallelism KB)
 				8p - 0x7FFFFFFF
-
-		Secret value (K): Serves as a key if necessary
-				0 - 32 bytes
 	}
+
+	if MemorySizeKB < (8*Parallelism) then
+		raise EArgon2Exception.CreateFmt('Requested MemorySizeKB (%d) is to small to handle desired Parallelism (%d)', [MemorySizeKB, Parallelism]);
+
+	ar := TArgon2.Create;
+	try
+		salt := ar.GenerateSalt;
+
+		utf8Password := TArgon2.StringToUtf8(Password);
+		try
+			derivedBytes := TArgon2.DeriveBytes(utf8Password, Length(Password)*SizeOf(WideChar), salt, Iterations, MemorySizeKB, Parallelism, 32);
+		finally
+			TArgon2.BurnBytes({var}utf8Password);
+		end;
+
+		Result := ar.FormatPasswordHash('Argon2id', $13, Iterations, MemorySizeKB, Parallelism, salt, derivedBytes);
+	finally
+		ar.Free;
+	end;
+end;
+
+class function TArgon2.StringToUtf8(const Source: UnicodeString): TBytes;
+var
+	strLen: Integer;
+	dw: DWORD;
+const
+	CodePage = CP_UTF8;
+begin
+{
+	For Argon2 passwords we will use UTF-8 encoding.
+}
+//	Result := TEncoding.UTF8.GetBytes(s);
+
+	if Length(Source) = 0 then
+	begin
+		SetLength(Result, 0);
+		Exit;
+	end;
+
+	// Determine real size of destination string, in bytes
+	strLen := WideCharToMultiByte(CodePage, 0,
+			PWideChar(Source), Length(Source), //Source
+			nil, 0, //Destination
+			nil, nil);
+	if strLen = 0 then
+	begin
+		dw := GetLastError;
+		raise EConvertError.Create('[StringToUtf8] Could not get length of destination string. Error '+IntToStr(dw)+' ('+SysErrorMessage(dw)+')');
+	end;
+
+	// Allocate memory for destination string
+	SetLength(Result, strLen);
+
+	// Convert source UTF-16 string (UnicodeString) to the destination using the code-page
+	strLen := WideCharToMultiByte(CodePage, 0,
+			PWideChar(Source), Length(Source), //Source
+			PAnsiChar(@Result[0]), strLen, //Destination
+			nil, nil);
+	if strLen = 0 then
+	begin
+		dw := GetLastError;
+		raise EConvertError.Create('[StringToUtf8] Could not convert utf16 to utf8 string. Error '+IntToStr(dw)+' ('+SysErrorMessage(dw)+')');
+	end;
 end;
 
 class function TArgon2.TimingSafeSameString(const Safe, User: string): Boolean;
@@ -575,6 +940,7 @@ function TArgon2.TryParseHashString(HashString: string;
 var
 	tokens: TStringDynArray;
 	options: TStringDynArray;
+	currIndex: Integer;
 	a: string;
 	b: Integer;
 	i: Integer;
@@ -600,6 +966,17 @@ var
 		Result := TryStrToInt(lr[1], {out}B);
 	end;
 begin
+(*
+	$argon2<T>[$v=<num>]$m=<num>,t=<num>,p=<num>$<bin>$<bin>
+
+	where
+		<T> is either 'd', 'id', or 'i'
+		<num> is a decimal integer (positive, fits in an 'unsigned long')
+		<bin> is Base64-encoded data (no '=' padding characters, no newline or whitespace).
+
+	The last two binary chunks (encoded in Base64) are, in that order, the salt and the output.
+	Both are required. The binary salt length and the output length must be in the allowed ranges defined in argon2.h.
+*)
 	Result := False;
 	Algorithm := '';
 	Version := 0;
@@ -619,7 +996,7 @@ begin
 		Parallelism:  4
 		Salt:         736F6D6573616c74
 		Data:         45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6
-	}
+}
 
 	if HashString = '' then
 		Exit; //raise EArgon2Exception.Create('HashString cannot be empty');
@@ -637,24 +1014,29 @@ begin
 		//tokens[4] ==> "c29tZXNhbHQ"
 		//tokens[5] ==> "RdescudvJCsgt3ub+b+dWRWJTmaaJObG"
 
-	if Length(tokens) < 6 then Exit;
-	if (not AnsiSameText(tokens[1], 'argon2i')) and
-			(not AnsiSameText(tokens[1], 'argon2d')) and
-			(not AnsiSameText(tokens[1], 'argon2id')) then Exit;
+	if (Length(tokens) <> 6) and (Length(tokens) <> 5) then Exit;
 
-	Algorithm := tokens[1];
+	currIndex := 1;
+	if (not AnsiSameText(tokens[currIndex], 'argon2i')) and
+			(not AnsiSameText(tokens[currIndex], 'argon2d')) and
+			(not AnsiSameText(tokens[currIndex], 'argon2id')) then Exit;
+	Algorithm := tokens[currIndex];
+	Inc(currIndex);
 
-	//"v=19"
-	if not TryParseAB(tokens[2], {out}a, {out}b) then Exit;
-	if not AnsiSameText(a, 'v') then Exit;
-
-	Version := b;
+	//"v=19" (optinal)
+	if StartsWith(tokens[currIndex], 'v=') then
+	begin
+		if not TryParseAB(tokens[currIndex], {out}a, {out}b) then Exit;
+		if not AnsiSameText(a, 'v') then Exit;
+		Version := b;
+		Inc(currIndex);
+	end;
 
 	//"m=65536,t=2,p=4"
 	//	m: MemoryFactor
 	//	t: Iterations
 	//	p: Parallelism
-	options := Self.Tokenize(tokens[3], ',');
+	options := Self.Tokenize(tokens[currIndex], ',');
 	if Length(options) <> 3 then Exit;
 	for i := 0 to 2 do
 	begin
@@ -670,9 +1052,12 @@ begin
 		else
 			Exit;
 	end;
+	Inc(currIndex);
 
-	Salt := TArgon2.Base64Decode(tokens[4]);
-	Data := TArgon2.Base64Decode(tokens[5]);
+	Salt := TArgon2.Base64Decode(tokens[currIndex]);
+	Inc(currIndex);
+
+	Data := TArgon2.Base64Decode(tokens[currIndex]);
 
 	Result := True;
 end;
@@ -724,6 +1109,7 @@ end;
 { TBlake2b }
 
 {$OVERFLOWCHECKS OFF}
+{$RANGECHECKS OFF}
 procedure TBlake2b.BlakeCompress(const m: PBlake2bBlockArray; cbBytesProcessed: Int64; IsFinalBlock: Boolean);
 var
 	V: TBlake2bBlockArray;  //local work vector
@@ -790,6 +1176,7 @@ begin
 	vb := UInt64(ROR64(UInt64(vb xor vc), 63));
 end;
 {$OVERFLOWCHECKS ON}
+{$RANGECHECKS ON}
 
 procedure TBlake2b.Burn;
 begin
@@ -811,14 +1198,42 @@ begin
 	if (cbKeyLen < 0) or (cbKeyLen > 64) then
 		raise EArgon2Exception.CreateFmt('Invalid Blake2b key length: %d', [cbKeyLen]);
 
+	FProcessed := 0;
+	FBufferLength := 0;
 
-	SetLength(FKey, cbKeyLen);
+	//Initialize state vector h with IV
+	Move(IV[0], h[0], 8*SizeOf(Int64));
+
+
+	// Mix key size (cbKeyLen) and desired hash length (cbHashLen) into h0
+	// 0x0101kknn
+	//       kk   is key length in bytes
+	//         nn is the desired hash length in bytes
+	h[0] := Int64(h[0] xor $01010000 xor (cbKeyLen shl 8) xor FDigestSize);
+
+	//If we were passed a key, then pad it to 128 bytes, and pass it as our first chunk
 	if cbKeyLen > 0 then
-		Move(Key, FKey[0], cbKeyLen);
+	begin
+		ZeroMemory(@FBuffer[0], Length(FBuffer));
+		Move(Key, FBuffer[0], cbKeyLen);
+		FBufferLength := 128;
+		//We'll process it the next block we try to hash (even if that means during Finalize)
+	end;
 end;
 
 function TBlake2b.Finalize: TBytes;
 begin
+	//We now have our last block
+	//Fill our zero-padded chunk array with any remaining bytes
+	//pChunk will point to this temporary buffer
+	if (FBufferLength > 0) or (FProcessed = 0) then
+	begin
+		if FBufferLength < 128 then
+			ZeroMemory(@FBuffer[FBufferLength], 128-FBufferLength);
+		Inc(FProcessed, FBufferLength);
+		BlakeCompress(@FBuffer[0], FProcessed, True);
+	end;
+
 	//RETURN first "DesiredHashBytes" bytes from little-endian word array h[].
 	SetLength(Result, FDigestSize);
 	Move(h[0], Result[0], FDigestSize);
@@ -838,13 +1253,10 @@ end;
 
 procedure TBlake2b.HashData(const Buffer; BufferLen: Integer);
 var
-//	V: array[0..15] of Int64; //intermediate work vector
-	pChunk: PBlake2bBlockArray;
-	cbProcessed: Int64;
 	cbRemaining: Int64;
-	chunk: array[0..15] of Int64;
-	isLastChunk: Boolean;
-	cbKeyLen: Integer; //0..64
+	bufferRoom: Integer;
+	bytesToCopy: Integer;
+	source: PByte;
 begin
 	{
 		Input:
@@ -856,63 +1268,51 @@ begin
 		Output:
 			Result:        Hash of cbHashLen bytes long
 	}
-	//Initialize state vector h with IV
-	Move(IV[0], h[0], 8*SizeOf(Int64));
-
-	cbKeyLen := Length(FKey);
-
-	// Mix key size (cbKeyLen) and desired hash length (cbHashLen) into h0
-	// 0x0101kknn
-	//       kk   is key length in bytes
-	//         nn is the desired hash length in bytes
-	h[0] := Int64(h[0] xor $01010000 xor (cbKeyLen shl 8) xor FDigestSize);
-
-	cbProcessed := 0;
-
-	//If we were passed a key, then pad it to 128 bytes, and pass it as our first chunk
-	if cbKeyLen > 0 then
-	begin
-		ZeroMemory(@chunk[0], Length(chunk)*SizeOf(Int64));
-		Move(FKey[0], chunk[0], cbKeyLen);
-		Inc(cbProcessed, 128);
-		pChunk := @chunk[0];
-
-		isLastChunk := (BufferLen = 0);
-		BlakeCompress(pChunk, cbProcessed, isLastChunk); //(cbRemaining <= Int64(0)));
-	end;
+	if BufferLen <= 0 then
+		Exit;
 
 	cbRemaining := BufferLen;
 
-	if BufferLen > 0 then
-		pChunk := @Buffer
-	else
-		pChunk := nil;
+	source := @Buffer;
 
-	//Compress whole chunks
-	if BufferLen > 0 then
+	if (FBufferLength > 0) and (FBufferLength < 128) then
 	begin
-		while (cbRemaining > 128) do
-		begin
-			Inc(cbProcessed, 128);
-			BlakeCompress(pChunk, cbProcessed, False);
-			Inc(pChunk, 1);
-			Dec(cbRemaining, 128);
-		end;
+		//Fill our partial buffer
+		bufferRoom := 128 - FBufferLength;
+		bytesToCopy := cbRemaining;
+		if bytesToCopy > bufferRoom then
+			bytesToCopy := bufferRoom;
+
+		Move(source^, FBuffer[FBufferLength], bytesToCopy);
+		Inc(FBufferLength, bytesToCopy);
+		Inc(source, bytesToCopy);
+		Dec(cbRemaining, bytesToCopy);
 	end;
 
-	//We now have our last block
-	//Fill our zero-padded chunk array with any remaining bytes
-	//pChunk will point to this temporary buffer
-	if (cbRemaining > 0) or (cbProcessed = 0) then
+	if cbRemaining <= 0 then
+		Exit;
+
+	//there are more bytes to deal with; that means we know that our pending block is not the final
+	if FBufferLength >= 128 then
 	begin
-		ZeroMemory(@chunk[0], SizeOf(chunk));
-		if cbRemaining > 0 then
-		begin
-			Move(pChunk^, chunk[0], cbRemaining);
-			Inc(cbProcessed, cbRemaining);
-		end;
-		pChunk := @chunk[0];
-		BlakeCompress(pChunk, cbProcessed, True);
+		Inc(FProcessed, 128);
+		BlakeCompress(@FBuffer[0], FProcessed, False);
+		FBufferLength := 0;
+	end;
+
+	while cbRemaining > 128 do
+	begin
+		Inc(FProcessed, 128);
+		BlakeCompress(Pointer(source), FProcessed, False);
+		Inc(source, 128);
+		Dec(cbRemaining, 128);
+	end;
+
+	//Store any partial block data in our buffer
+	if cbRemaining > 0 then
+	begin
+		FBufferLength := cbRemaining;
+		Move(source^, FBuffer[0], cbRemaining);
 	end;
 end;
 
@@ -955,23 +1355,79 @@ type
 	TVector16i = array[0..15] of Integer;
 	PVector16i = ^TVector16i;
 
+	function GetMemAligned(AlignmentBytes: Cardinal; Size: Integer; out RawPointer: Pointer): Pointer;
+	var
+		n: NativeUInt;
+	begin
+		RawPointer := GetMemory(Size+AlignmentBytes);
+
+		n := NativeUInt(RawPointer);
+		if (n mod AlignmentBytes) <> 0 then
+		begin
+			n := n - (n mod AlignmentBytes) + AlignmentBytes;
+		end;
+
+		Result := Pointer(n);
+		Assert(n mod AlignmentBytes = 0);
+	end;
+
+function __AddInt64(a: Int64; b: Int64): Int64;
+asm
+	movq  xmm0, a;
+	movq  xmm1, b;
+	paddq xmm0, xmm1;
+//	paddq xmm0, b;
+
+//	movq  a,  xmm0;
+	movq Result, xmm0;
+//	movq Result, a;
+end;
+
 { TBlake2bOptimized }
 
 {$OVERFLOWCHECKS OFF}
+{$RANGECHECKS OFF}
 procedure TBlake2bOptimized.BlakeCompress(const m: PBlake2bBlockArray; cbBytesProcessed: Int64; IsFinalBlock: Boolean);
 var
-	v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14, v15: Int64;
-	S: PVector16i; //current round message mixing schedule
+	v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14, v15: UInt64;
+	Scurrent: PVector16i;
+	s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s15: Integer;
 	i: Integer; //indexes
 	t1, t2, t3, t4: UInt64Rec;
+	x: Integer;
+	raw: Pointer;
 const
 	r = 12; //The number of rounds (Blake2b: 12, Blake2s: 10)
+	SIGMA: array[0..11] of array[0..15] of Integer = (
+			//0   1   2   3   4   5   6   7   8   9  10  11  12  13  14  15
+			( 0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15),
+			(14, 10,  4,  8,  9, 15, 13,  6,  1, 12,  0,  2, 11,  7,  5,  3),
+			(11,  8, 12,  0,  5,  2, 15, 13, 10, 14,  3,  6,  7,  1,  9,  4),
+			( 7,  9,  3,  1, 13, 12, 11, 14,  2,  6,  5, 10,  4,  0, 15,  8),
+			( 9,  0,  5,  7,  2,  4, 10, 15, 14,  1, 11, 12,  6,  8,  3, 13),
+			( 2, 12,  6, 10,  0, 11,  8,  3,  4, 13,  7,  5, 15, 14,  1,  9),
+			(12,  5,  1, 15, 14, 13,  4, 10,  0,  7,  6,  3,  9,  2,  8, 11),
+			(13, 11,  7, 14, 12,  1,  3,  9,  5,  0, 15,  4,  8,  6,  2, 10),
+			( 6, 15, 14,  9, 11,  3,  0,  8, 12,  2, 13,  7,  1,  4, 10,  5),
+			(10,  2,  8,  4,  7,  6,  1,  5, 15, 11,  9, 14,  3, 12, 13,  0),
+			( 0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15),
+			(14, 10,  4,  8,  9, 15, 13,  6,  1, 12,  0,  2, 11,  7,  5,  3)
+	);
+
 begin
 	{
 		Initialize local work vector
 	}
 	//V[0..7]  <- State[0..7]
 	//V[8..15] <- IV[0..7]
+
+//	v := GetMemAligned(16, 16*SizeOf(UInt64), {out}raw);
+
+	//Check that it's aligned on a 16-byte boundary
+//	if (IntPtr(@v[0]) mod 16) <> 0 then
+//		raise Exception.CreateFmt('V alignment not 16 (%d, %d)', [IntPtr(@v[0]), IntPtr(@v[0]) mod 16]);
+
+
 	v0  := h[0];
 	v1  := h[1];
 	v2  := h[2];
@@ -989,173 +1445,200 @@ begin
 	v14 := IV[6];
 	v15 := IV[7];
 
-	//V[12] := Int64(IV[4] xor cbBytesProcessed);
-
 	//Invert the bits in V[14] if this is the final block
 	if IsFinalBlock then
-		v14 := v14 xor Int64($FFFFFFFFFFFFFFFF);
+		v14 := v14 xor UInt64($FFFFFFFFFFFFFFFF);
 
 	//Cryptographic mixing
 	for i := 0 to r-1 do //0..11 (r=12 for for Blake2b)
 	begin
 		//Message word selection permutation for this round
-{		if (i < 10) then
-			S := PVector16i(Addr(SIGMA[i][0]))
-		else
-			S := PVector16i(Addr(SIGMA[i mod 10][0]));}
-		case i of
-		0..9: S := PVector16i(Addr(SIGMA[i][0]));
-		10:   S := PVector16i(Addr(SIGMA[0][0]));
-		11:   S := PVector16i(Addr(SIGMA[1][0]));
-		else
-			S := PVector16i(Addr(SIGMA[i][0]));
-		end;
+{
+		Because we unwrap the loops, we access the SIGMA array in the index order:
 
+			0	2	4	6
+			1	3	5	7
+			8	10	12	14
+			9	11	13	15
+
+		So i'm going to cache the current SIGMA into local S, but rearranged in this order.
+}
+		Scurrent := @SIGMA[i];
+{		S[ 0] := Scurrent[ 0];	S[ 1] := Scurrent[ 2];	S[ 2] := Scurrent[ 4];	S[ 3] := Scurrent[ 6];
+		S[ 4] := Scurrent[ 1];	S[ 5] := Scurrent[ 3];	S[ 6] := Scurrent[ 5];	S[ 7] := Scurrent[ 7];
+		S[ 8] := Scurrent[ 8];	S[ 9] := Scurrent[10];	S[10] := Scurrent[12];	S[11] := Scurrent[14];
+		S[12] := Scurrent[ 9];	S[13] := Scurrent[11];	S[14] := Scurrent[13];	S[15] := Scurrent[15];}
+		S0  := Scurrent[ 0];	S1  := Scurrent[ 2];	S2  := Scurrent[ 4];	S3  := Scurrent[ 6];
+		S4  := Scurrent[ 1];	S5  := Scurrent[ 3];	S6  := Scurrent[ 5];	S7  := Scurrent[ 7];
+		S8  := Scurrent[ 8];	S9  := Scurrent[10];	S10 := Scurrent[12];	S11 := Scurrent[14];
+		S12 := Scurrent[ 9];	S13 := Scurrent[11];	S14 := Scurrent[13];	S15 := Scurrent[15];
 
 		//Mix input
-		v0  := v0 + v4 + m[S[0]];
-		v1  := v1 + v5 + m[S[2]];
-		v2  := v2 + v6 + m[S[4]];
-		v3  := v3 + v7 + m[S[6]];
-			t1.Value := (v12 xor v0);
-			t2.Value := (v13 xor v1);
-			t3.Value := (v14 xor v2);
-			t4.Value := (v15 xor v3);
-				//V = V ror 32
-				Int64Rec(v12).Lo := t1.Hi; Int64Rec(v12).Hi := t1.Lo;
-				Int64Rec(v13).Lo := t2.Hi; Int64Rec(v13).Hi := t2.Lo;
-				Int64Rec(v14).Lo := t3.Hi; Int64Rec(v14).Hi := t3.Lo;
-				Int64Rec(v15).Lo := t4.Hi; Int64Rec(v15).Hi := t4.Lo;
+		//v[0,1,2,3] += v[4,5,6,7] + m[S[0,2,4,6]]
+		v0 := v0+v4;
+		v1 := v1+v5;
+		v2 := v2+v6;
+		v3 := v3+v7;
+		v0 := v0+m[s0];
+		v1 := v1+m[s1];
+		v2 := v2+m[s2];
+		v3 := v3+m[s3];
+
+		//v[12..15] = (v[12..15] xor v[0..3]) ror 32
+		v12 := (v12 xor v0);
+		v13 := (v13 xor v1);
+		v14 := (v14 xor v2);
+		v15 := (v15 xor v3);
+		v12 := (v12 shr 32) or (v12 shl 32);
+		v13 := (v13 shr 32) or (v13 shl 32);
+		v14 := (v14 shr 32) or (v14 shl 32);
+		v15 := (v15 shr 32) or (v15 shl 32);
 
 		//No input
-		v8  := (v8  + v12);
-		v9  := (v9  + v13);
-		v10 := (v10 + v14);
-		v11 := (v11 + v15);
-
+		//v[8..11] += v[12..15]
+		//Inc(v[ 8], v[12]);  Inc(v[ 9], v[13]);  Inc(v[10], v[14]);  Inc(v[11], v[15]);
+		v8  := v8 + v12;
+		v9  := v9 + v13;
+		v10 := v10 + v14;
+		v11 := v11 + v15;
 		//V[4..7] = (V[4..7] xor V[8..11]) ror 24
 		t1.Value := v4 xor v8;
 		t2.Value := v5 xor v9;
 		t3.Value := v6 xor v10;
 		t4.Value := v7 xor v11;
-			Int64Rec(v4).lo := (t1.Hi shl  8) or (t1.lo shr 24); Int64Rec(v4).hi := (t1.Hi shr 24) or (t1.lo shl  8);
-			Int64Rec(v5).lo := (t2.Hi shl  8) or (t2.lo shr 24); Int64Rec(v5).hi := (t2.Hi shr 24) or (t2.lo shl  8);
-			Int64Rec(v6).lo := (t3.Hi shl  8) or (t3.lo shr 24); Int64Rec(v6).hi := (t3.Hi shr 24) or (t3.lo shl  8);
-			Int64Rec(v7).lo := (t4.Hi shl  8) or (t4.lo shr 24); Int64Rec(v7).hi := (t4.Hi shr 24) or (t4.lo shl  8);
+		PUInt64Rec(@v4).lo := (t1.Hi shl  8) or (t1.lo shr 24); PUInt64Rec(@v4).hi := (t1.Hi shr 24) or (t1.lo shl  8);
+		PUInt64Rec(@v5).lo := (t2.Hi shl  8) or (t2.lo shr 24); PUInt64Rec(@v5).hi := (t2.Hi shr 24) or (t2.lo shl  8);
+		PUInt64Rec(@v6).lo := (t3.Hi shl  8) or (t3.lo shr 24); PUInt64Rec(@v6).hi := (t3.Hi shr 24) or (t3.lo shl  8);
+		PUInt64Rec(@v7).lo := (t4.Hi shl  8) or (t4.lo shr 24); PUInt64Rec(@v7).hi := (t4.Hi shr 24) or (t4.lo shl  8);
 
 		//Mix input
-		v0 := v0 + v4 + m[S[1]];
-		v1 := v1 + v5 + m[S[3]];
-		v2 := v2 + v6 + m[S[5]];
-		v3 := v3 + v7 + m[S[7]];
-
+		//v[0..3] += v[4..7] + m[S[1,3,5,7]]
+		v0 := v0 + v4;
+		v1 := v1 + v5;
+		v2 := v2 + v6;
+		v3 := v3 + v7;
+		v0 := v0 + m[S4];
+		v1 := v1 + m[S5];
+		v2 := v2 + m[S6];
+		v3 := v3 + m[S7];
 		//V[12..15] = (V[12..15] xor V[0..3]) ror 16
 		t1.Value := v12 xor v0;
 		t2.Value := v13 xor v1;
 		t3.Value := v14 xor v2;
 		t4.Value := v15 xor v3;
-			Int64Rec(v12).lo := (t1.Hi shl 16) or (t1.lo shr 16); Int64Rec(v12).hi := (t1.Hi shr 16) or (t1.lo shl 16);
-			Int64Rec(v13).lo := (t2.Hi shl 16) or (t2.lo shr 16); Int64Rec(v13).hi := (t2.Hi shr 16) or (t2.lo shl 16);
-			Int64Rec(v14).lo := (t3.Hi shl 16) or (t3.lo shr 16); Int64Rec(v14).hi := (t3.Hi shr 16) or (t3.lo shl 16);
-			Int64Rec(v15).lo := (t4.Hi shl 16) or (t4.lo shr 16); Int64Rec(v15).hi := (t4.Hi shr 16) or (t4.lo shl 16);
+		PUInt64Rec(@v12).lo := (t1.Hi shl 16) or (t1.lo shr 16); PUInt64Rec(@v12).hi := (t1.Hi shr 16) or (t1.lo shl 16);
+		PUInt64Rec(@v13).lo := (t2.Hi shl 16) or (t2.lo shr 16); PUInt64Rec(@v13).hi := (t2.Hi shr 16) or (t2.lo shl 16);
+		PUInt64Rec(@v14).lo := (t3.Hi shl 16) or (t3.lo shr 16); PUInt64Rec(@v14).hi := (t3.Hi shr 16) or (t3.lo shl 16);
+		PUInt64Rec(@v15).lo := (t4.Hi shl 16) or (t4.lo shr 16); PUInt64Rec(@v15).hi := (t4.Hi shr 16) or (t4.lo shl 16);
 
 		//No Input
-		//V[8..11] V[8..1] + V[12..15]
-		v8  := (v8  + v12);
-		v9  := (v9  + v13);
-		v10 := (v10 + v14);
-		v11 := (v11 + v15);
-
+		//V[8..11] = V[8..1] + V[12..15]
+		v8 := v8 + v12;
+		v9 := v9 + v13;
+		v10 := v10 + v14;
+		v11 := v11 + v15;
 		//V[4..7] = (V[4..11] xor V[8..11]) ror 63
 		t1.Value := v4 xor v8;
 		t2.Value := v5 xor v9;
 		t3.Value := v6 xor v10;
 		t4.Value := v7 xor v11;
-			Int64Rec(v4).lo := (t1.Hi shr 31) or (t1.lo shl  1); Int64Rec(v4).hi := (t1.Hi shl  1) or (t1.lo shr 31);
-			Int64Rec(v5).lo := (t2.Hi shr 31) or (t2.lo shl  1); Int64Rec(v5).hi := (t2.Hi shl  1) or (t2.lo shr 31);
-			Int64Rec(v6).lo := (t3.Hi shr 31) or (t3.lo shl  1); Int64Rec(v6).hi := (t3.Hi shl  1) or (t3.lo shr 31);
-			Int64Rec(v7).lo := (t4.Hi shr 31) or (t4.lo shl  1); Int64Rec(v7).hi := (t4.Hi shl  1) or (t4.lo shr 31);
-
+		PUInt64Rec(@v4).lo := (t1.Hi shr 31) or (t1.lo shl  1); PUInt64Rec(@v4).hi := (t1.Hi shl  1) or (t1.lo shr 31);
+		PUInt64Rec(@v5).lo := (t2.Hi shr 31) or (t2.lo shl  1); PUInt64Rec(@v5).hi := (t2.Hi shl  1) or (t2.lo shr 31);
+		PUInt64Rec(@v6).lo := (t3.Hi shr 31) or (t3.lo shl  1); PUInt64Rec(@v6).hi := (t3.Hi shl  1) or (t3.lo shr 31);
+		PUInt64Rec(@v7).lo := (t4.Hi shr 31) or (t4.lo shl  1); PUInt64Rec(@v7).hi := (t4.Hi shl  1) or (t4.lo shr 31);
 
 		{
 			Second half
 		}
 		//Mix input
-		v0 := v0 + v5 + m[S[ 8]];
-		v1 := v1 + v6 + m[S[10]];
-		v2 := v2 + v7 + m[S[12]];
-		v3 := v3 + v4 + m[S[14]];
-
+		//V[0..3] += V[5,6,7,4] + m[S[8,10,12,14]]
+		v0 := v0 + v5;
+		v1 := v1 + v6;
+		v2 := v2 + v7;
+		v3 := v3 + v4;
+		v0 := v0 + m[S8];
+		v1 := v1 + m[S9];
+		v2 := v2 + m[S10];
+		v3 := v3 + m[S11];
 		//V[12..15] = (V[12..15] xor V[1230]) ror 32
 		t1.Value := (v12 xor v1);
 		t2.Value := (v13 xor v2);
 		t3.Value := (v14 xor v3);
 		t4.Value := (v15 xor v0);
-			Int64Rec(v12).Lo := t1.Hi; Int64Rec(v12).Hi := t1.Lo;
-			Int64Rec(v13).Lo := t2.Hi; Int64Rec(v13).Hi := t2.Lo;
-			Int64Rec(v14).Lo := t3.Hi; Int64Rec(v14).Hi := t3.Lo;
-			Int64Rec(v15).Lo := t4.Hi; Int64Rec(v15).Hi := t4.Lo;
+		PUInt64Rec(@v12).Lo := t1.Hi; PUInt64Rec(@v12).Hi := t1.Lo;
+		PUInt64Rec(@v13).Lo := t2.Hi; PUInt64Rec(@v13).Hi := t2.Lo;
+		PUInt64Rec(@v14).Lo := t3.Hi; PUInt64Rec(@v14).Hi := t3.Lo;
+		PUInt64Rec(@v15).Lo := t4.Hi; PUInt64Rec(@v15).Hi := t4.Lo;
 
-		//V[8..1] += V[13,14,15,12]
-		v8  := v8  + v13;
-		v9  := v9  + v14;
+		//V[8..11] += V[13,14,15,12]
+		//Inc(v[ 8], v[13]); Inc(v[ 9], v[14]); Inc(v[10], v[15]); Inc(v[11], v[12]);
+		v8 := v8 + v13;
+		v9 := v9 + v14;
 		v10 := v10 + v15;
 		v11 := v11 + v12;
-
-		//V[4..7] = (V[4..7 xor
+		//V[4..7] = (V[5,6,7,4] xor V[10,11,8,9]) ror 24
 		t1.Value := v5 xor v10;
 		t2.Value := v6 xor v11;
 		t3.Value := v7 xor v8;
 		t4.Value := v4 xor v9;
-			Int64Rec(v5).lo := (t1.Hi shl  8) or (t1.lo shr 24); Int64Rec(v5).hi := (t1.Hi shr 24) or (t1.lo shl  8);
-			Int64Rec(v6).lo := (t2.Hi shl  8) or (t2.lo shr 24); Int64Rec(v6).hi := (t2.Hi shr 24) or (t2.lo shl  8);
-			Int64Rec(v7).lo := (t3.Hi shl  8) or (t3.lo shr 24); Int64Rec(v7).hi := (t3.Hi shr 24) or (t3.lo shl  8);
-			Int64Rec(v4).lo := (t4.Hi shl  8) or (t4.lo shr 24); Int64Rec(v4).hi := (t4.Hi shr 24) or (t4.lo shl  8);
-
+		PUInt64Rec(@v5).lo := (t1.Hi shl  8) or (t1.lo shr 24); PUInt64Rec(@v5).hi := (t1.Hi shr 24) or (t1.lo shl  8);
+		PUInt64Rec(@v6).lo := (t2.Hi shl  8) or (t2.lo shr 24); PUInt64Rec(@v6).hi := (t2.Hi shr 24) or (t2.lo shl  8);
+		PUInt64Rec(@v7).lo := (t3.Hi shl  8) or (t3.lo shr 24); PUInt64Rec(@v7).hi := (t3.Hi shr 24) or (t3.lo shl  8);
+		PUInt64Rec(@v4).lo := (t4.Hi shl  8) or (t4.lo shr 24); PUInt64Rec(@v4).hi := (t4.Hi shr 24) or (t4.lo shl  8);
 
 		//Mix input
-		v0 := (v0 + v5 + m[S[ 9]]);   //with input
-		v1 := (v1 + v6 + m[S[11]]);   //with input
-		v2 := (v2 + v7 + m[S[13]]);   //with input
-		v3 := (v3 + v4 + m[S[15]]);   //with input
-
-
+		//V[0..3] += V[5,6,7,4] + m[S[9,11,13,15]]
+		v0 := v0 + v5;
+		v1 := v1 + v6;
+		v2 := v2 + v7;
+		v3 := v3 + v4;
+		v0 := v0 + m[S12];
+		v1 := v1 + m[S13];
+		v2 := v2 + m[S14];
+		v3 := v3 + m[S15];
+		//V[15,12,13,14] = (v[15,12,13,14] xor v[0,1,2,3]) ror 16
 		t1.Value := v15 xor v0;
 		t2.Value := v12 xor v1;
 		t3.Value := v13 xor v2;
 		t4.Value := v14 xor v3;
-			Int64Rec(v15).lo := (t1.Hi shl 16) or (t1.lo shr 16); Int64Rec(v15).hi := (t1.Hi shr 16) or (t1.lo shl 16);
-			Int64Rec(v12).lo := (t2.Hi shl 16) or (t2.lo shr 16); Int64Rec(v12).hi := (t2.Hi shr 16) or (t2.lo shl 16);
-			Int64Rec(v13).lo := (t3.Hi shl 16) or (t3.lo shr 16); Int64Rec(v13).hi := (t3.Hi shr 16) or (t3.lo shl 16);
-			Int64Rec(v14).lo := (t4.Hi shl 16) or (t4.lo shr 16); Int64Rec(v14).hi := (t4.Hi shr 16) or (t4.lo shl 16);
+		PUInt64Rec(@v15).lo := (t1.Hi shl 16) or (t1.lo shr 16); PUInt64Rec(@v15).hi := (t1.Hi shr 16) or (t1.lo shl 16);
+		PUInt64Rec(@v12).lo := (t2.Hi shl 16) or (t2.lo shr 16); PUInt64Rec(@v12).hi := (t2.Hi shr 16) or (t2.lo shl 16);
+		PUInt64Rec(@v13).lo := (t3.Hi shl 16) or (t3.lo shr 16); PUInt64Rec(@v13).hi := (t3.Hi shr 16) or (t3.lo shl 16);
+		PUInt64Rec(@v14).lo := (t4.Hi shl 16) or (t4.lo shr 16); PUInt64Rec(@v14).hi := (t4.Hi shr 16) or (t4.lo shl 16);
 
+		//No input
+		//V[10,11,8,9] += v[15,12,13,14]
+		//Inc(v[10], v[15]); Inc(v[11], v[12]); Inc(v[ 8], v[13]); Inc(v[ 9], v[14]);
+		v10 := v10 + v15;
+		v11 := v11 + v12;
+		v8  := v8  + v13;
+		v9  := v9  + v14;
 
-		v10 := (v10 + v15);       //no input
-		v11 := (v11 + v12);       //no input
-		v8  := (v8  + v13);       //no input
-		v9  := (v9  + v14);       //no input
-
+		//v[5,6,7,4] = (v[5,6,7,4] xor v[10,11,8,9]) ror 63
 		t1.Value := v5 xor v10;
 		t2.Value := v6 xor v11;
 		t3.Value := v7 xor v8;
 		t4.Value := v4 xor v9;
-			Int64Rec(v5).lo := (t1.Hi shr 31) or (t1.lo shl  1); Int64Rec(v5).hi := (t1.Hi shl  1) or (t1.lo shr 31);
-			Int64Rec(v6).lo := (t2.Hi shr 31) or (t2.lo shl  1); Int64Rec(v6).hi := (t2.Hi shl  1) or (t2.lo shr 31);
-			Int64Rec(v7).lo := (t3.Hi shr 31) or (t3.lo shl  1); Int64Rec(v7).hi := (t3.Hi shl  1) or (t3.lo shr 31);
-			Int64Rec(v4).lo := (t4.Hi shr 31) or (t4.lo shl  1); Int64Rec(v4).hi := (t4.Hi shl  1) or (t4.lo shr 31);
+		PUInt64Rec(@v5).lo := (t1.Hi shr 31) or (t1.lo shl  1); PUInt64Rec(@v5).hi := (t1.Hi shl  1) or (t1.lo shr 31);
+		PUInt64Rec(@v6).lo := (t2.Hi shr 31) or (t2.lo shl  1); PUInt64Rec(@v6).hi := (t2.Hi shl  1) or (t2.lo shr 31);
+		PUInt64Rec(@v7).lo := (t3.Hi shr 31) or (t3.lo shl  1); PUInt64Rec(@v7).hi := (t3.Hi shl  1) or (t3.lo shr 31);
+		PUInt64Rec(@v4).lo := (t4.Hi shr 31) or (t4.lo shl  1); PUInt64Rec(@v4).hi := (t4.Hi shl  1) or (t4.lo shr 31);
 	end;
 
 	//Mix the upper and lower halves of V into ongoing state vector h
 	//Unrolling this loop did nothing
-	h[0] := h[0] xor v0 xor v8;
-	h[1] := h[1] xor v1 xor v9;
-	h[2] := h[2] xor v2 xor v10;
-	h[3] := h[3] xor v3 xor v11;
-	h[4] := h[4] xor v4 xor v12;
-	h[5] := h[5] xor v5 xor v13;
-	h[6] := h[6] xor v6 xor v14;
-	h[7] := h[7] xor v7 xor v15;
+	h[0] := h[0] xor (v0 xor v8 );
+	h[1] := h[1] xor (v1 xor v9 );
+	h[2] := h[2] xor (v2 xor v10);
+	h[3] := h[3] xor (v3 xor v11);
+	h[4] := h[4] xor (v4 xor v12);
+	h[5] := h[5] xor (v5 xor v13);
+	h[6] := h[6] xor (v6 xor v14);
+	h[7] := h[7] xor (v7 xor v15);
 end;
+
 {$OVERFLOWCHECKS ON}
+{$RANGECHECKS ON}
 
 end.
+

@@ -12,7 +12,8 @@ type
 		function GetTimestamp: Int64;
 		function GetBlake2bUnkeyedTestVector(Index: Integer): string;
 		function GetBlake2bKeyedTestVector(Index: Integer): string;
-		procedure CheckEqualsBytes(ExpectedBytes, ActualBytes: TBytes);
+		procedure CheckEqualsBytes(ExpectedBytes, ActualBytes: TBytes; msg: string='');
+		function Blake2b(const Data; DataLen: Integer; DesiredBytes: Integer; const Key; KeyLen: Integer): TBytes;
 	published
 		procedure Test_ROR64;
 		procedure Blake2b_SpeedTest;
@@ -26,6 +27,10 @@ type
 
 		procedure Test_ParseHashString;
 		procedure Test_ParseHashString_OtherParameterOrders;
+		procedure Test_ParseHashString_VerisonOptional;
+
+		procedure Test_ArgonSeedBlockH0;
+		procedure Test_Argon2i;
 	end;
 
 implementation
@@ -61,13 +66,22 @@ begin
 	j := 0;
 	while (i < Length(s)) do
 	begin
-			n := StrToInt('0x'+s[i]+s[i+1]);
+		n := StrToInt('0x'+s[i]+s[i+1]);
 		Result[j] := n;
 		Inc(i, 2);
       Inc(j, 1);
    end;
 end;
 
+
+function TArgon2Tests.Blake2b(const Data; DataLen, DesiredBytes: Integer; const Key; KeyLen: Integer): TBytes;
+var
+	blake2b: IHashAlgorithm;
+begin
+	blake2b := TArgon2Friend.CreateHash('Blake2b', DesiredBytes, Key, KeyLen) as IHashAlgorithm;
+	blake2b.HashData(Data, DataLen);
+	Result := blake2b.Finalize;
+end;
 
 procedure TArgon2Tests.Blake2b_SpeedTest;
 var
@@ -86,9 +100,8 @@ var
 
 		bestTime := 0;
 
-		OutputDebugString('SAMPLING ON');
-
 		//Fastest time of 5 runs
+		OutputDebugString('SAMPLING ON');
 		for i := 1 to 5 do
 		begin
 			t1 := GetTimestamp;
@@ -104,7 +117,7 @@ var
 
 		speed := Length(data) / (bestTime/freq); //bytes/s
 
-		Status(Format('%s		%.3f MB/s	%.0f ns/byte', [
+		Status(Format('%s		%.3f MB/s	%.3f ns/byte', [
 			HashAlgorithmName,
 			speed/1024/1024,
 			1000000000/speed]));
@@ -112,10 +125,13 @@ var
 begin
 	if not QueryPerformanceFrequency(freq) then
 		freq := -1;
-	SetLength(data, 4*1024*1024); //1 MB
-
 	Status(Format('%s		%s	%s', ['Algorithm', 'Speed (MB/s)',	'ns/byte']));
+
+	SetLength(data, 128*1024*1024); //1 MB
+
 	Test('Blake2b');
+//	Test('Blake2b.Safe');
+//	Test('Blake2b.Optimized');
 end;
 
 function TArgon2Tests.GetTimestamp: Int64;
@@ -157,10 +173,11 @@ begin
 
 	for i := 0 to 255 do
 	begin
-		actual := TArgon2Friend.HashData(input[0], i, 64, key[0], 64);
+
+		actual := Self.Blake2b(input[0], i, 64, key[0], 64);
 		expected := Self.HexStringToBytes(Self.GetBlake2BKeyedTestVector(i));
 
-		CheckEqualsBytes(Expected, actual);
+		CheckEqualsBytes(Expected, actual, 'Iteration '+IntToStr(i));
 	end;
 end;
 
@@ -180,7 +197,7 @@ begin
 }
 	s := 'abc';
 
-	actual := TArgon2Friend.HashData(Pointer(s)^, Length(s), 64, Pointer(nil)^, 0);
+	actual := Blake2b(Pointer(s)^, Length(s), 64, Pointer(nil)^, 0);
 
 	expected := HexStringToBytes(
 			'BA 80 A5 3F 98 1C 4D 0D 6A 27 97 B6 9F 12 F6 E9'+
@@ -218,11 +235,79 @@ begin
 
 	for i := 0 to 255 do
 	begin
-		actual := TArgon2Friend.HashData(input[0], i, 64, Pointer(nil)^, 0);
+		actual := Blake2b(input[0], i, 64, Pointer(nil)^, 0);
 		expected := Self.HexStringToBytes(GetBlake2BUnkeyedTestVector(i));
 
-		CheckEqualsBytes(expected, actual);
+		CheckEqualsBytes(expected, actual, 'Iteration '+IntToStr(i));
 	end;
+end;
+
+procedure TArgon2Tests.Test_Argon2i;
+var
+	password: TBytes;
+	salt: TBytes;
+	ar: TArgon2;
+	expected, actual: TBytes;
+begin
+	password := TBytes.Create(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1); //32 bytes of 1
+
+	//Argon2i
+	ar := TArgon2i.Create;
+	try
+		ar.MemorySizeKB := 32; //32 KiB
+		ar.Iterations := 3;
+		ar.DegreeOfParallelism := 4; //4 lanes (threads)
+		ar.Salt := TBytes.Create(2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2); //16 bytes of 2
+		ar.KnownSecret := TBytes.Create(3, 3, 3, 3, 3, 3, 3, 3); //8 bytes of 3
+		ar.AssociatedData := TBytes.Create(4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4); //12 bytes of 4
+		actual := ar.GetBytes(password[0], Length(password), 32);
+	finally
+		ar.Free;
+	end;
+
+	expected := TBytes.Create(
+				$c8, $14, $d9, $d1, $dc, $7f, $37, $aa,
+				$13, $f0, $d7, $7f, $24, $94, $bd, $a1,
+				$c8, $de, $6b, $01, $6d, $d3, $88, $d2,
+				$99, $52, $a4, $c4, $67, $2b, $6c, $e8 );
+
+	CheckEqualsBytes(expected, actual);
+end;
+
+procedure TArgon2Tests.Test_ArgonSeedBlockH0;
+var
+	password: TBytes;
+	salt: TBytes;
+	ar: TArgon2;
+	expected, actual: TBytes;
+begin
+	{
+		Argon2d test vector
+		https://tools.ietf.org/id/draft-irtf-cfrg-argon2-03.html#rfc.section.6.1
+	}
+	password := TBytes.Create(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1); //32 bytes of 1
+
+	//Argon2i
+	ar := TArgon2i.Create;
+	try
+		ar.MemorySizeKB := 32; //32 KiB
+		ar.Iterations := 3;
+		ar.DegreeOfParallelism := 4; //4 lanes (threads)
+		ar.Salt := TBytes.Create(2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2); //16 bytes of 2
+		ar.KnownSecret := TBytes.Create(3, 3, 3, 3, 3, 3, 3, 3); //8 bytes of 3
+		ar.AssociatedData := TBytes.Create(4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4); //12 bytes 12
+		actual := TArgon2Friend(ar).GenerateInitialBlock(password[0], Length(password), 32);
+	finally
+		ar.Free;
+	end;
+
+	expected := TBytes.Create(
+			$c4, $60, $65, $81, $52, $76, $a0, $b3, $e7, $31, $73, $1c, $90, $2f, $1f, $d8,
+			$0c, $f7, $76, $90, $7f, $bb, $7b, $6a, $5c, $a7, $2e, $7b, $56, $01, $1f, $ee,
+			$ca, $44, $6c, $86, $dd, $75, $b9, $46, $9a, $5e, $68, $79, $de, $c4, $b7, $2d,
+			$08, $63, $fb, $93, $9b, $98, $2e, $5f, $39, $7c, $c7, $d1, $64, $fd, $da, $a9);
+
+	CheckEqualsBytes(expected, actual);
 end;
 
 procedure TArgon2Tests.Test_ParseHashString;
@@ -238,7 +323,7 @@ procedure TArgon2Tests.Test_ParseHashString;
 		actualSalt, actualData: TBytes;
 		expectedSalt, expectedData: TBytes;
 	begin
-		a2 := TArgon2.Create;
+		a2 := TArgon2.Create();
 		try
 			actualResult := TArgon2Friend(a2).TryParseHashString(HashString,
 					{out}actualAlgorithm, {out}actualVersion, {out}actualIterations, {out}actualMemoryFactor, {out}actualParallelism,
@@ -247,21 +332,21 @@ procedure TArgon2Tests.Test_ParseHashString;
 			a2.free;
 		end;
 
-		CheckEquals(expectedResult, actualResult);
+		CheckEquals(expectedResult, actualResult, HashString);
 		if not actualResult then
 			Exit;
 
-		CheckEquals(expectedAlgorithm,    actualAlgorithm);
-		CheckEquals(ExpectedVersion,      actualVersion);
-		CheckEquals(ExpectedMemoryFactor, actualMemoryFactor);
-		CheckEquals(ExpectedIterations,   actualIterations);
-		CheckEquals(ExpectedParallelism,  actualParallelism);
+		CheckEquals(expectedAlgorithm,    actualAlgorithm,    HashString);
+		CheckEquals(ExpectedVersion,      actualVersion,      HashString);
+		CheckEquals(ExpectedMemoryFactor, actualMemoryFactor, HashString);
+		CheckEquals(ExpectedIterations,   actualIterations,   HashString);
+		CheckEquals(ExpectedParallelism,  actualParallelism,  HashString);
 
 		expectedSalt := HexStringToBytes(strExpectedSalt);
-		CheckEqualsBytes(ExpectedSalt, actualSalt);
+		CheckEqualsBytes(ExpectedSalt, actualSalt, HashString);
 
 		expectedData := HexStringToBytes(strExpectedData);
-		CheckEqualsBytes(ExpectedData, actualData);
+		CheckEqualsBytes(ExpectedData, actualData, HashString);
 	end;
 begin
 {
@@ -364,6 +449,85 @@ begin
 	t('$argon2i$v=19$P=4,M=65536,T=2$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 19, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
 	t('$argon2i$v=19$P=4,T=2,M=65536$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 19, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
 
+end;
+
+procedure TArgon2Tests.Test_ParseHashString_VerisonOptional;
+
+	procedure t(HashString: string; ExpectedResult: Boolean; ExpectedAlgorithm: string;
+			ExpectedVersion, ExpectedMemoryFactor, ExpectedIterations, ExpectedParallelism: Integer;
+			strExpectedSalt, strExpectedData: string);
+	var
+		a2: TArgon2;
+		actualAlgorithm: string;
+		actualResult: Boolean;
+		actualVersion, actualMemoryFactor, actualIterations, actualParallelism: Integer;
+		actualSalt, actualData: TBytes;
+		expectedSalt, expectedData: TBytes;
+	begin
+		a2 := TArgon2.Create;
+		try
+			actualResult := TArgon2Friend(a2).TryParseHashString(HashString,
+					{out}actualAlgorithm, {out}actualVersion, {out}actualIterations, {out}actualMemoryFactor, {out}actualParallelism,
+					{out}actualSalt, {out}actualData);
+		finally
+			a2.free;
+		end;
+
+		CheckEquals(expectedResult, actualResult);
+		if not actualResult then
+			Exit;
+
+		CheckEquals(expectedAlgorithm,    actualAlgorithm);
+		CheckEquals(ExpectedVersion,      actualVersion);
+		CheckEquals(ExpectedMemoryFactor, actualMemoryFactor);
+		CheckEquals(ExpectedIterations,   actualIterations);
+		CheckEquals(ExpectedParallelism,  actualParallelism);
+
+		expectedSalt := HexStringToBytes(strExpectedSalt);
+		CheckEqualsBytes(ExpectedSalt, actualSalt);
+
+		expectedData := HexStringToBytes(strExpectedData);
+		CheckEqualsBytes(ExpectedData, actualData);
+	end;
+begin
+{
+	HashString:		$argon2i$v=19$m=65536,t=2,p=4$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG
+
+		Algorithm:       "argon2i"
+		Version:          19
+		Memory (m):       65536 (KiB)
+		Iterations (t):   2
+		Parallelism (p):  4
+		Salt:             736F6D6573616c74
+		Data:             45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6
+}
+	{
+		Other order of parameters
+			mtp
+			mpt
+			tmp
+			tpm
+			pmt
+			ptm
+	}
+	t('$argon2i$m=65536,t=2,p=4$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 0, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+	t('$argon2i$m=65536,p=4,t=2$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 0, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+
+	t('$argon2i$t=2,m=65536,p=4$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 0, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+	t('$argon2i$t=2,p=4,m=65536$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 0, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+
+	t('$argon2i$p=4,m=65536,t=2$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 0, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+	t('$argon2i$p=4,t=2,m=65536$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 0, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+
+	//uppercase
+	t('$argon2i$M=65536,T=2,P=4$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 0, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+	t('$argon2i$M=65536,P=4,T=2$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 0, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+
+	t('$argon2i$T=2,M=65536,P=4$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 0, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+	t('$argon2i$T=2,P=4,M=65536$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 0, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+
+	t('$argon2i$P=4,M=65536,T=2$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 0, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
+	t('$argon2i$P=4,T=2,M=65536$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 0, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
 end;
 
 procedure TArgon2Tests.Test_ROR64;
@@ -657,14 +821,14 @@ begin
 
 end;
 
-procedure TArgon2Tests.CheckEqualsBytes(ExpectedBytes, ActualBytes: TBytes);
+procedure TArgon2Tests.CheckEqualsBytes(ExpectedBytes, ActualBytes: TBytes; msg: string);
 begin
 	CheckEquals(Length(ExpectedBytes), Length(ActualBytes));
 
 	if Length(ActualBytes) = 0 then
 		Exit;
 
-	CheckEqualsMem(Pointer(ExpectedBytes), Pointer(ActualBytes), Length(ActualBytes));
+	CheckEqualsMem(Pointer(ExpectedBytes), Pointer(ActualBytes), Length(ActualBytes), msg);
 end;
 
 function TArgon2Tests.GetBlake2bKeyedTestVector(Index: Integer): string;
@@ -977,13 +1141,13 @@ begin
 		data[i] := Byte(i);
 		key := 256-i;
 
-		digest := TArgon2Friend.HashData(data[0], i, 64, key, 4);
+		digest := Blake2b(data[0], i, 64, key, 4);
 
 		Move(Pointer(digest)^, hashes[i*HashBytes], HashBytes);
 	end;
 
 	//And then hash the result array
-	digest := TArgon2Friend.HashData(hashes[0], 256*HashBytes, 64, key, 0);
+	digest := Blake2b(hashes[0], 256*HashBytes, 64, key, 0);
 
 	// The first four bytes of that hash, interpreted as a little-endian integer, is our verification value
 	Move(Pointer(digest)^, actual, 4);
@@ -999,7 +1163,6 @@ var
 	i: Integer;
 	len: Integer;
 	hasher: IHashAlgorithm;
-	hash0, hash1: TBytes;
 	split1, split2: Integer;
 begin
 	{
@@ -1024,18 +1187,21 @@ begin
 
 	for len := 0 to 255 do
 	begin
-		hash0 := TArgon2Friend.HashData(input[0], len, 64, nil^, 0); //default digest size is 64 bytes
+		//Hash the entire thing in one chunk
+		expected := Blake2b(input[0], len, 64, nil^, 0); //default digest size is 64 bytes
 
+		//The the entire thing in every possible form of three chunks
 		for split1 := 0 to len do
 		begin
 			for split2 := split1 to len do
 			begin
-				hasher := TArgon2Friend.CreateHash('Blake2b', 64, Pointer(nil)^, 0); //64 byte digest, no key
+				hasher := TArgon2Friend.CreateHash('Blake2b', 64, Pointer(nil)^, 0) as IHashAlgorithm; //64 byte digest, no key
 				hasher.HashData(input[0], split1);
 				hasher.HashData(input[split1], split2-split1);
 				hasher.HashData(input[split2], len-split2);
-				hash1 := hasher.Finalize;
+				actual := hasher.Finalize;
 
+				//Check that
 				CheckEqualsBytes(expected, actual);
 			end;
 		end;
@@ -1090,7 +1256,7 @@ begin
 		i'm misunderstanding something about what their horrible reference code is trying to do.
 		Perhaps it's something as silly as the Fibonacci generator; or integer overflow
 	}
-	runningHash := TArgon2Friend.CreateHash('Blake2b', 32, Pointer(nil)^, 0); //32 byte digest, no key
+	runningHash := TArgon2Friend.CreateHash('Blake2b', 32, Pointer(nil)^, 0) as IHashAlgorithm; //32 byte digest, no key
 
 	//For each key/hash length we want to try
 	for i := 0 to 3 do //20, 32, 48, 64
@@ -1105,13 +1271,13 @@ begin
 			data := GenerateSequence(bufferLength);
 
 			//Hash the data (with no key), and add the digest to our running hash
-			digest := TArgon2Friend.HashData(data, bufferLength, hashLen, Pointer(nil)^, 0);
+			digest := Blake2b(data, bufferLength, hashLen, Pointer(nil)^, 0);
 			runningHash.HashData(digest[0], hashLen); //Add the digest to our running hash
 
 			//Hash the data (with a generated key), and add the digest to our running hash
 			keyLen  := hashLen;
 			key := GenerateSequence(keyLen); //Generate a sequence to use as a key
-			digest := TArgon2Friend.HashData(data, bufferLength, hashLen, key, keyLen);
+			digest := Blake2b(data, bufferLength, hashLen, key, keyLen);
 			runningHash.HashData(digest[0], hashLen); //Add the digest to our running hash
 		end;
 	end;
