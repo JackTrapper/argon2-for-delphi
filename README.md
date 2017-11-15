@@ -12,7 +12,7 @@ This code is licensed under public domain **Unlicense**. One of the virtues of t
 - MIT
 - Copyleft
 
-For those of you who are *still* to dumb to understand what *public domain* means, I can official tell you:
+For those of you who are *still* to dumb to understand what *public domain* means, I can officially and legally tell you:
 
 - you're a moron
 - this code is officially licensed under a hept-license (kinda like *dual* license; but seven): you can pick whichever what your corporate pea-brains understand.
