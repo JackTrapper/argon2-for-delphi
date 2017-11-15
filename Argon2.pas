@@ -1,4 +1,4 @@
-unit Argon2;
+﻿unit Argon2;
 
 {
 	https://tools.ietf.org/html/draft-irtf-cfrg-argon2-03
@@ -662,17 +662,11 @@ type
 function TArgon2.GetBytes(const Passphrase; PassphraseLength: Integer; DesiredNumberOfBytes: Integer): TBytes;
 var
 	lanes: array of TArray<UInt64>;
-	i, j, s, l: Integer;
-	iref, jref: Integer;
-	segmentLength: Integer;
-	start: Integer;
-	currOffset, prevOffset: Integer;
+	i, j: Integer;
+//	iref, jref: Integer;
 	digest: TBytes;
-	prevLane: Integer;
-	c: Integer;
 	h0: TBytes;
-	columnCount, blockCount: Integer;
-	B: TBytes;
+	columnCount: Integer;
 const
 	SDesiredBytesMaxError = 'Argon2 only supports generating a maximum of 1,024 bytes (Requested %d bytes)';
 	SInvalidIterations = 'Argon2 hash requires at least 1 iteration (Requested %d)';
@@ -694,7 +688,7 @@ begin
 
 	//Calculate number of 1 KiB blocks by rounding down memorySizeKB to the nearest multiple of 4*DegreeOfParallelism kilobytes
 	columnCount := memorySizeKB div 4 div FDegreeOfParallelism;
-	blockCount := columnCount * FDegreeOfParallelism;
+	//blockCount := columnCount * FDegreeOfParallelism;
 
 	//Allocate two-dimensional array of 1 KiB blocks (parallelism rows x columnCount columns)
 	SetLength(lanes, FDegreeOfParallelism);
@@ -723,6 +717,9 @@ begin
 			//Bi[j] = G(Bi[j-1], Biref[jref])
 		end;
 	end;
+
+	SetLength(Result, DesiredNumberOfBytes);
+	FillChar(Result[0], DesiredNumberOfBytes, 0);
 
 end;
 
@@ -849,7 +846,7 @@ begin
 	try
 		salt := ar.GenerateSalt;
 
-		utf8Password := TArgon2.PasswordStringPrep(Password);
+		utf8Password := TArgon2.PasswordStringPrep(Password); //use proper normalization of spaces,
 		try
 			derivedBytes := TArgon2.DeriveBytes(utf8Password, Length(Password)*SizeOf(WideChar), salt, Iterations, MemorySizeKB, Parallelism, 32);
 		finally
@@ -898,15 +895,138 @@ begin
 			- C (Composition):                 adds character+diacritic into single code point (if possible)
 			- D (Decomposition):               separates an accented character into the letter and the diacritic
 
-		SASLprep (rfc4013), like StringPrep (rfc3454) both specified NFKC:
+		SASLprep (rfc4013) says to use NFKC:
 
-			Before: Noe�l
-			After:  No�l
+
+			2.2.  Normalization
+
+				This profile specifies using Unicode normalization form KC, as described in Section 4 of [StringPrep].
+
+		StringPrep (rfc3454, Preparation of Internationalized Strings ("stringprep")) both specified NFKC:
+
+			4. Normalization
+
+				The output of the mapping step is optionally normalized using one of
+				the Unicode normalization forms, as described in [UAX15].  A profile
+				can specify one of two options for Unicode normalization:
+
+				- no normalization
+
+				- Unicode normalization with form KC
+
+
+		Composition means combining diacritics into base characters
+
+			Before: Noe¨l
+			After:  Noël
+
+
+		But
+				RFC4013 - SASLprep: Stringprep Profile for User Names and Passwords (NFKC)
+
+		was obsoleted by
+
+				RFC7613 - Preparation, Enforcement, and Comparison of Internationalized Strings Representing Usernames and Passwords
+
+		reverses earlier RFC, and specifies NFC:
+
+			4.2.2.  Enforcement
+
+				An entity that performs enforcement according to this profile MUST
+				prepare a string as described in Section 4.2.1 and MUST also apply
+				the rules specified below for the OpaqueString profile (these rules
+				MUST be applied in the order shown):
+
+				1.  Width-Mapping Rule: Fullwidth and halfwidth characters MUST NOT
+					 be mapped to their decomposition mappings (see Unicode Standard
+					 Annex #11 [UAX11]).
+
+				2.  Additional Mapping Rule: Any instances of non-ASCII space MUST be
+					 mapped to ASCII space (U+0020); a non-ASCII space is any Unicode
+					 code point having a Unicode general category of "Zs" (with the
+					 exception of U+0020).
+
+				3.  Case-Mapping Rule: Uppercase and titlecase characters MUST NOT be
+					 mapped to their lowercase equivalents.
+
+				4.  Normalization Rule: Unicode Normalization Form C (NFC) MUST be
+					 applied to all characters.
+
+		This was probably mainly done because Compatibility Composition leads to data loss. From Microsoft:
+
+			[Using Unicode Normalization to Represent Strings](https://msdn.microsoft.com/en-us/library/windows/desktop/dd374126.aspx)
+			--------------------
+
+				Forms KC and KD are similar to forms C and D, respectively, but these "compatibility forms" have additional
+				mappings of compatible characters to the basic form of each character. Such mappings can cause minor
+				character variations to be lost. They combine certain characters that are visually distinct. For example,
+				they combine full-width and half-width characters with the same semantic meaning, or different forms of the
+				same Arabic letter, or the ligature "ﬁ" (U+FB01) and the character pair "fi" (U+0066 U+0069). They also
+				combine some characters that might sometimes have a different semantic meaning, such as a digit written
+				as a superscript, as a subscript, or enclosed in a circle.
+
+				**Because of this information loss, forms KC and KD generally should not be used as canonical forms of strings,**
+				but they are useful for certain applications.
+
+				Form KC is a composed form and form KD is a decomposed form. The application can go back and forth between
+				forms KC and KD, but there is no consistent way to go from form KC or KD back to the original string,
+				even if the original string is in form C or D.
+
+				Windows, Microsoft applications, and the .NET Framework generally generate characters in form C using normal
+				input methods. For most purposes on Windows, form C is the preferred form. For example, characters in form
+				C are produced by Windows keyboard input. However, characters imported from the Web and other platforms can
+				introduce other normalization forms into the data stream.
+
+		This loss of data when using KC is evident in RFC7613's requirement:
+
+				... halfwidth characters MUST NOT be mapped to their decomposition mappings...
+
+		Using Form NFKC causes the half-width character
+
+			U+FFC3  HALFWIDTH HANGUL LETTER AE         UTF8 0xEF 0xBF 0x83
+
+		to be mapped to:
+
+			U+1162  HANGUL JUNGSEONG AE                UTF8 0xE1 0x85 0xA2
+
+
+		Spaces
+		======
+
+		RFC7613 (Preparation, Enforcement, and Comparison of Internationalized Strings Representing Usernames and Passwords)
+
+			(like RFC4013 that it obsoletes)
+
+		also reminds us to normalize all the differnet unicode space characters into the standard single U+0020 SPACE:
+
+			2.  Additional Mapping Rule: Any instances of non-ASCII space MUST be mapped to ASCII space (U+0020);
+				 a non-ASCII space is any Unicode code point having a Unicode general category of "Zs"
+				 (with the  exception of U+0020).
+
+					U+0020	SPACE
+					U+00A0	NO-BREAK SPACE
+					U+1680	OGHAM SPACE MARK
+					U+2000	EN QUAD
+					U+2001	EM QUAD
+					U+2002	EN SPACE
+					U+2003	EM SPACE
+					U+2004	THREE-PER-EM SPACE
+					U+2005	FOUR-PER-EM SPACE
+					U+2006	SIX-PER-EM SPACE
+					U+2007	FIGURE SPACE
+					U+2008	PUNCTUATION SPACE
+					U+2009	THIN SPACE
+					U+200A	HAIR SPACE
+					U+202F	NARROW NO-BREAK SPACE
+					U+205F	MEDIUM MATHEMATICAL SPACE
+					U+3000	IDEOGRAPHIC SPACE
+
+			This is handled by NFC.
 	}
 
 	//We use concrete variable for length, because i've seen it return asking for 64 bytes for a 6 byte string
 //	normalizedLength := NormalizeString(5, PWideChar(Source), Length(Source), nil, 0);
-	normalizedLength := FoldString(MAP_FOLDCZONE, PWideChar(Source), Length(Source), nil, 0);
+	normalizedLength := FoldString(MAP_PRECOMPOSED, PWideChar(Source), Length(Source), nil, 0);
 	if normalizedLength = 0 then
 	begin
 		dw := GetLastError;
@@ -919,7 +1039,7 @@ begin
 	// Now do it for real
 	try
 //		normalizedLength := NormalizeString(5, PWideChar(Source), Length(Source), PWideChar(normalized), Length(normalized));
-		normalizedLength := FoldString(MAP_FOLDCZONE, PWideChar(Source), Length(Source), PWideChar(normalized), Length(normalized));
+		normalizedLength := FoldString(MAP_PRECOMPOSED, PWideChar(Source), Length(Source), PWideChar(normalized), Length(normalized));
 		if normalizedLength = 0 then
 		begin
 			dw := GetLastError;
@@ -1491,7 +1611,7 @@ type
 	var
 		n: NativeUInt;
 	begin
-		RawPointer := GetMemory(Size+AlignmentBytes);
+		RawPointer := GetMemory(Size+Integer(AlignmentBytes));
 
 		n := NativeUInt(RawPointer);
 		if (n mod AlignmentBytes) <> 0 then

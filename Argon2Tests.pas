@@ -16,6 +16,7 @@ type
 		function Blake2b(const Data; DataLen: Integer; DesiredBytes: Integer; const Key; KeyLen: Integer): TBytes;
 		function GetExpectedH0: TBytes;
 		function GetExpectedInitalBlock(Column, Lane: Integer): TBytes;
+		procedure TestStringPrep(const s: UnicodeString; Expected: array of Byte);
 	published
 		procedure Test_ROR64;
 		procedure Blake2b_SpeedTest;
@@ -35,9 +36,9 @@ type
 		procedure Test_ArgonInitialBlocks;
 		procedure Test_Argon2i;
 
-		procedure UnicodeCompatibleComposition; //check that we use unicode compatible composition (NFKC) on passwords (NIST SP 800-63B)
-		procedure NormalizedPasswordsMatch; //check that composed and decomposed strings both validate to the same
+		procedure UnicodeCompatibleComposition; //check that we use unicode compatible composition (NFC) on passwords (NIST SP 800-63B)
 		procedure SASLprep; //SASLprep rules for passwords
+		procedure NormalizedPasswordsMatch; //check that composed and decomposed strings both validate to the same
 
 	end;
 
@@ -130,23 +131,25 @@ procedure TArgon2Tests.SASLprep;
 var
 	pass: UnicodeString;
 
-	function CheckUtf8(const s: UnicodeString; Expected: array of Byte): Boolean;
-	var
-		data: TBytes;
-	begin
-		Result := False;
-
-		data := TArgon2Friend.PasswordStringPrep(s);
-
-		if Length(data) <> Length(Expected) then
-			Exit;
-
-		CheckEqualsBytes(Expected, data);
-	end;
 begin
 	{
+		SASLprep rules for passwords
+		RFC7613 (SASLprep) specifies that we must normalize
+			https://tools.ietf.org/html/rfc7613
+			 Preparation, Enforcement, and Comparison of Internationalized Strings Representing Usernames and Passwords
+
+		4.2.2.  Enforcement
+
 		1. Width-Mapping Rule: Fullwidth and halfwidth characters MUST NOT be mapped to their decomposition mappings
 			(see Unicode Standard Annex #11 [UAX11](https://tools.ietf.org/html/rfc7613#ref-UAX11)).
+
+
+		2. Additional Mapping Rule: Any instances of non-ASCII space MUST be mapped to ASCII space (U+0020);
+			a non-ASCII space is any Unicode code point having a Unicode general category of "Zs" (with the exception of U+0020).
+
+		3. Case-Mapping Rule: Uppercase and titlecase characters MUST NOT be mapped to their lowercase equivalents.
+
+		4.  Normalization Rule: Unicode Normalization Form C (NFC) MUST be applied to all characters.
 	}
 
 	{
@@ -158,15 +161,21 @@ begin
 			U+FF54  FULLWIDTH LATIN SMALL   LETTER t   UTF8 0xEF 0xBD 0x94
 	}
 	pass := #$ff34 + #$ff45 + #$ff53 + #$ff54;
-	CheckUtf8(pass, [$ef, $bc, $b4, $ef, $bd, $85, $bd, $93, $ef, $bd, $94, 0]);
+	TestStringPrep(pass, [$ef, $bc, $b4, $ef, $bd, $85, $bd, $93, $ef, $bd, $94, 0]);
 
 
 	{
 		Halfwidth
 			U+FFC3  HALFWIDTH HANGUL LETTER AE         UTF8 0xEF 0xBF 0x83
+
+		Windows MAP_FOLDCZONE decomposes
+			U+FFC3  HALFWIDTH HANGUL LETTER AE         UTF8 0xEF 0xBF 0x83
+
+		into
+			U+1162  HANGUL JUNGSEONG AE                UTF8 0xE1 0x85 0xA2
 	}
 	pass := #$ffc3;
-	CheckUtf8(pass, [$ef, $bf, $83, 0]);
+	TestStringPrep(pass, [$ef, $bf, $83, 0]);
 
 
 	{
@@ -174,23 +183,23 @@ begin
 			 a non-ASCII space is any Unicode code point having a Unicode general category of "Zs"
 			 (with the  exception of U+0020).
 	}
-	CheckUtf8(#$0020, [$20, $00]); //U+0020	SPACE
-	CheckUtf8(#$00A0, [$20, $00]); //U+00A0	NO-BREAK SPACE
-	CheckUtf8(#$1680, [$20, $00]); //U+1680	OGHAM SPACE MARK
-	CheckUtf8(#$2000, [$20, $00]); //U+2000	EN QUAD
-	CheckUtf8(#$2001, [$20, $00]); //U+2001	EM QUAD
-	CheckUtf8(#$2002, [$20, $00]); //U+2002	EN SPACE
-	CheckUtf8(#$2003, [$20, $00]); //U+2003	EM SPACE
-	CheckUtf8(#$2004, [$20, $00]); //U+2004	THREE-PER-EM SPACE
-	CheckUtf8(#$2005, [$20, $00]); //U+2005	FOUR-PER-EM SPACE
-	CheckUtf8(#$2006, [$20, $00]); //U+2006	SIX-PER-EM SPACE
-	CheckUtf8(#$2007, [$20, $00]); //U+2007	FIGURE SPACE
-	CheckUtf8(#$2008, [$20, $00]); //U+2008	PUNCTUATION SPACE
-	CheckUtf8(#$2009, [$20, $00]); //U+2009	THIN SPACE
-	CheckUtf8(#$200A, [$20, $00]); //U+200A	HAIR SPACE
-	CheckUtf8(#$202F, [$20, $00]); //U+202F	NARROW NO-BREAK SPACE
-	CheckUtf8(#$205F, [$20, $00]); //U+205F	MEDIUM MATHEMATICAL SPACE
-	CheckUtf8(#$3000, [$20, $00]); //U+3000	IDEOGRAPHIC SPACE
+	TestStringPrep(#$0020, [$20, $00]); //U+0020	SPACE
+	TestStringPrep(#$00A0, [$20, $00]); //U+00A0	NO-BREAK SPACE
+	TestStringPrep(#$1680, [$20, $00]); //U+1680	OGHAM SPACE MARK
+	TestStringPrep(#$2000, [$20, $00]); //U+2000	EN QUAD
+	TestStringPrep(#$2001, [$20, $00]); //U+2001	EM QUAD
+	TestStringPrep(#$2002, [$20, $00]); //U+2002	EN SPACE
+	TestStringPrep(#$2003, [$20, $00]); //U+2003	EM SPACE
+	TestStringPrep(#$2004, [$20, $00]); //U+2004	THREE-PER-EM SPACE
+	TestStringPrep(#$2005, [$20, $00]); //U+2005	FOUR-PER-EM SPACE
+	TestStringPrep(#$2006, [$20, $00]); //U+2006	SIX-PER-EM SPACE
+	TestStringPrep(#$2007, [$20, $00]); //U+2007	FIGURE SPACE
+	TestStringPrep(#$2008, [$20, $00]); //U+2008	PUNCTUATION SPACE
+	TestStringPrep(#$2009, [$20, $00]); //U+2009	THIN SPACE
+	TestStringPrep(#$200A, [$20, $00]); //U+200A	HAIR SPACE
+	TestStringPrep(#$202F, [$20, $00]); //U+202F	NARROW NO-BREAK SPACE
+	TestStringPrep(#$205F, [$20, $00]); //U+205F	MEDIUM MATHEMATICAL SPACE
+	TestStringPrep(#$3000, [$20, $00]); //U+3000	IDEOGRAPHIC SPACE
 end;
 
 function TArgon2Tests.Blake2b(const Data; DataLen, DesiredBytes: Integer; const Key; KeyLen: Integer): TBytes;
@@ -364,7 +373,6 @@ end;
 procedure TArgon2Tests.Test_Argon2i;
 var
 	password: TBytes;
-	salt: TBytes;
 	ar: TArgon2;
 	expected, actual: TBytes;
 begin
@@ -396,7 +404,6 @@ end;
 procedure TArgon2Tests.Test_ArgonInitialBlocks;
 var
 	password: TBytes;
-	salt: TBytes;
 	ar: TArgon2;
 	h0: TBytes;
 	block00, block01: TBytes; //Lane 0
@@ -462,7 +469,6 @@ end;
 procedure TArgon2Tests.Test_ArgonSeedBlockH0;
 var
 	password: TBytes;
-	salt: TBytes;
 	ar: TArgon2;
 	expected, actual: TBytes;
 begin
@@ -735,8 +741,6 @@ end;
 procedure TArgon2Tests.UnicodeCompatibleComposition;
 var
 	password: UnicodeString;
-	utf8: TBytes;
-	bRes: Boolean;
 begin
 	{
 		Check that we use unicode compatible composition (NFKC) on passwords.
@@ -763,18 +767,7 @@ begin
 	}
 	password := 'A' + #$0308 + #$FB01 + 'n';
 
-	utf8 := TArgon2Friend.PasswordStringPrep(password);
-
-	{
-		0xC3 0x84 0x66 0x69 0x6E 0x00
-	}
-	bRes := (Length(utf8) = 6);
-	bRes := bRes and (utf8[0] = $c3);
-	bRes := bRes and (utf8[1] = $84);
-	bRes := bRes and (utf8[2] = $66);
-	bRes := bRes and (utf8[3] = $69);
-	bRes := bRes and (utf8[4] = $6e);
-	bRes := bRes and (utf8[5] = $00); //we do include the null terminator
+	TestStringPrep(password, [$C3, $84, $66, $69, $6E, $00]);
 end;
 
 function TArgon2Tests.GetBlake2bUnkeyedTestVector(Index: Integer): string;
@@ -1219,6 +1212,18 @@ begin
 		Exit;
 
 	CheckEqualsMem(@ExpectedBytes[0], @ActualBytes[0], Length(ActualBytes), msg);
+end;
+
+procedure TArgon2Tests.TestStringPrep(const s: UnicodeString; Expected: array of Byte);
+var
+	data: TBytes;
+begin
+	data := TArgon2Friend.PasswordStringPrep(s);
+
+	if Length(data) <> Length(Expected) then
+		Exit;
+
+	CheckEqualsBytes(Expected, data, s);
 end;
 
 function TArgon2Tests.GetBlake2bKeyedTestVector(Index: Integer): string;
