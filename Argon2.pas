@@ -61,7 +61,8 @@ type
 		FAssociatedData: TBytes;
 	protected
 		FHashType: Cardinal; //0=Argon2d, 1=Argon2i, 2=Argon2id
-		function GenerateInitialBlock(const Passphrase; PassphraseLength, DesiredNumberOfBytes: Integer): TBytes;
+		function GenerateSeedBlock(const Passphrase; PassphraseLength, DesiredNumberOfBytes: Integer): TBytes;
+		function GenerateInitialBlock(const H0: TBytes; ColumnIndex, LaneIndex: Integer): TBytes;
 		class procedure BurnBytes(var data: TBytes);
 		class function StringToUtf8(const Source: UnicodeString): TBytes;
 
@@ -213,6 +214,8 @@ type
 	private
 	protected
 		FDigestSize: Integer;
+		FKey: TBytes;
+		FInitialized: Boolean;
 		h: array[0..7] of Int64; //State vector
 		FBuffer: array[0..127] of Byte;
 		FBufferLength: Integer;
@@ -221,8 +224,10 @@ type
 		procedure Burn;
 		procedure BlakeCompress(const m: PBlake2bBlockArray; cbBytesProcessed: Int64; IsFinalBlock: Boolean); virtual;
 		procedure BlakeMix(var Va, Vb, Vc, Vd: UInt64; const x, y: Int64); inline;
+		procedure Initialize;
 	public
 		constructor Create(const Key; cbKeyLen: Integer; cbHashLen: Integer);
+		destructor Destroy; override;
 
 		function GetBlockSize: Integer;
 		function GetDigestSize: Integer;
@@ -240,6 +245,26 @@ type
 	TBlake2bOptimized = class(TBlake2b)
 	protected
 		procedure BlakeCompress(const m: PBlake2bBlockArray; cbBytesProcessed: Int64; IsFinalBlock: Boolean); override;
+	end;
+
+	TArgon2Hash = class(TInterfacedObject, IHashAlgorithm)
+	private
+		FDigestSize: Integer;
+		FBlake2: IHashAlgorithm;
+	protected
+		function GetBlockSize: Integer;
+		function GetDigestSize: Integer;
+	public
+		constructor Create(DigestSize: Integer);
+
+		{ Methods }
+		procedure HashData(const Buffer; BufferLen: Integer);
+		function Finalize: TBytes;
+
+		{ Properties }
+		property BlockSize: Integer read GetBlockSize;
+		property DigestSize: Integer read GetDigestSize;
+
 	end;
 
 { TArgon2 }
@@ -637,21 +662,24 @@ type
 
 function TArgon2.GetBytes(const Passphrase; PassphraseLength: Integer; DesiredNumberOfBytes: Integer): TBytes;
 var
-	lanes: array of TBytes;
+	lanes: array of TArray<UInt64>;
 	i, j, s, l: Integer;
 	iref, jref: Integer;
 	segmentLength: Integer;
 	start: Integer;
 	currOffset, prevOffset: Integer;
+	digest: TBytes;
 	prevLane: Integer;
 	c: Integer;
 	h0: TBytes;
 	columnCount, blockCount: Integer;
+	B: TBytes;
 const
 	SDesiredBytesMaxError = 'Argon2 only supports generating a maximum of 1,024 bytes (Requested %d bytes)';
 	SInvalidIterations = 'Argon2 hash requires at least 1 iteration (Requested %d)';
 	SInvalidMemorySize = 'Argon2 requires at least 4 KB to be used (Requested %d KB)';
 	SInvalidParallelism = 'Argon2 requires at one 1 thread (Requested %d parallelism)';
+	BlockStride = 128;
 begin
 	if DesiredNumberOfBytes > 1024 then
 		raise EArgon2Exception.CreateFmt(SDesiredBytesMaxError, [DesiredNumberOfBytes]);
@@ -663,7 +691,7 @@ begin
 		raise EArgon2Exception.CreateFmt(SInvalidParallelism, [FDegreeOfParallelism]);
 
 	//Generate the initial 64-byte block h0
-	h0 := Self.GenerateInitialBlock(Passphrase, PassphraseLength, DesiredNumberOfBytes);
+	h0 := Self.GenerateSeedBlock(Passphrase, PassphraseLength, DesiredNumberOfBytes);
 
 	//Calculate number of 1 KiB blocks by rounding down memorySizeKB to the nearest multiple of 4*DegreeOfParallelism kilobytes
 	columnCount := memorySizeKB div 4 div FDegreeOfParallelism;
@@ -672,18 +700,18 @@ begin
 	//Allocate two-dimensional array of 1 KiB blocks (parallelism rows x columnCount columns)
 	SetLength(lanes, FDegreeOfParallelism);
 	for i := 0 to FDegreeOfParallelism-1 do
-		SetLength(lanes[i], columnCount*1024);
+		SetLength(lanes[i], columnCount*1024 div SizeOf(UInt64));
 
-	//Compute the first block (i.e. column zero) of each lane (i.e. row)
+	//Compute the first and second blocks of each lane (i.e. column zero and one)
 	for i := 0 to FDegreeOfParallelism-1 do
 	begin
-//		lanes[i][0] := Hash(H0 || 0 || i);
-	end;
+		//lanes[i][0] := Hash(H0 || 0 || i);
+		digest := GenerateInitialBlock(h0, 0, i);
+		Move(digest[0], lanes[i][0], 1024);
 
-	//Compute the second block (i.e. column one) of each lane (i.e. row)
-	for i := 0 to FDegreeOfParallelism-1 do //for each lane
-	begin
-//		lanes[i][1] := Hash(H0 || 1 || i);
+		//lanes[i][1] := Hash(H0 || 1 || i);
+		GenerateInitialBlock(h0, 1, i);
+		Move(digest[0], lanes[i][BlockStride], 1024);
 	end;
 
 	//Compute remaining columns of each lane
@@ -699,11 +727,28 @@ begin
 
 end;
 
-function TArgon2.GenerateInitialBlock(const Passphrase; PassphraseLength: Integer; DesiredNumberOfBytes: Integer): TBytes;
+function TArgon2.GenerateInitialBlock(const H0: TBytes; ColumnIndex, LaneIndex: Integer): TBytes;
+var
+	hash: IHashAlgorithm;
+begin
+	hash := TArgon2Hash.Create(1024);
+
+	//block = Hash( h0 || columnIndex || LaneIndex, 1024);
+	hash.HashData(h0[0], Length(h0));
+	hash.HashData(ColumnIndex, 4);
+	hash.HashData(LaneIndex, 4);
+
+	Result := hash.Finalize;
+end;
+
+function TArgon2.GenerateSeedBlock(const Passphrase; PassphraseLength: Integer; DesiredNumberOfBytes: Integer): TBytes;
 var
 	blake2b: IHashAlgorithm;
 	n: Integer;
 begin
+	{
+		Generate the 64-byte H0 seed block
+	}
 	blake2b := Self.CreateObject('Blake2b') as IHashAlgorithm;
 
 	blake2b.HashData(FDegreeOfParallelism, 4);
@@ -1180,49 +1225,48 @@ end;
 
 procedure TBlake2b.Burn;
 begin
-	//Initialize state vector h with IV
-	Move(IV[0], h[0], 8*SizeOf(UInt64));
 	FProcessed := 0;
+	FBufferLength := 0;
+
+	if Length(FKey) > 0 then
+	begin
+		FillChar(FKey[0], Length(FKey), 0);
+		SetLength(FKey, 0);
+	end;
+	FInitialized := False;
+	FillChar(h[0], Length(h)*SizeOf(Int64), 0); //State vector
+	FillChar(FBuffer[0], Length(FBuffer), 0);
 end;
 
 constructor TBlake2b.Create(const Key; cbKeyLen: Integer; cbHashLen: Integer);
 begin
 	inherited Create;
 
-	Self.Burn;
-
 	if (cbHashLen < 0) or (cbHashLen > 64) then
 		raise EArgon2Exception.CreateFmt('Invalid Blake2b desired hash length: %d', [cbHashLen]);
-	FDigestSize := cbHashLen;
-
 	if (cbKeyLen < 0) or (cbKeyLen > 64) then
 		raise EArgon2Exception.CreateFmt('Invalid Blake2b key length: %d', [cbKeyLen]);
 
-	FProcessed := 0;
-	FBufferLength := 0;
+	Self.Burn;
 
-	//Initialize state vector h with IV
-	Move(IV[0], h[0], 8*SizeOf(Int64));
-
-
-	// Mix key size (cbKeyLen) and desired hash length (cbHashLen) into h0
-	// 0x0101kknn
-	//       kk   is key length in bytes
-	//         nn is the desired hash length in bytes
-	h[0] := Int64(h[0] xor $01010000 xor (cbKeyLen shl 8) xor FDigestSize);
-
-	//If we were passed a key, then pad it to 128 bytes, and pass it as our first chunk
+	FDigestSize := cbHashLen;
+	SetLength(FKey, cbKeyLen);
 	if cbKeyLen > 0 then
-	begin
-		ZeroMemory(@FBuffer[0], Length(FBuffer));
-		Move(Key, FBuffer[0], cbKeyLen);
-		FBufferLength := 128;
-		//We'll process it the next block we try to hash (even if that means during Finalize)
-	end;
+		Move(Key, FKey[0], cbKeyLen);
+end;
+
+destructor TBlake2b.Destroy;
+begin
+	Self.Burn;
+
+	inherited;
 end;
 
 function TBlake2b.Finalize: TBytes;
 begin
+	if not FInitialized then
+		Self.Initialize;
+
 	//We now have our last block
 	//Fill our zero-padded chunk array with any remaining bytes
 	//pChunk will point to this temporary buffer
@@ -1238,7 +1282,7 @@ begin
 	SetLength(Result, FDigestSize);
 	Move(h[0], Result[0], FDigestSize);
 
-	Self.Burn;
+	FInitialized := False;
 end;
 
 function TBlake2b.GetBlockSize: Integer;
@@ -1268,6 +1312,9 @@ begin
 		Output:
 			Result:        Hash of cbHashLen bytes long
 	}
+	if not FInitialized then
+		Self.Initialize;
+
 	if BufferLen <= 0 then
 		Exit;
 
@@ -1314,6 +1361,33 @@ begin
 		FBufferLength := cbRemaining;
 		Move(source^, FBuffer[0], cbRemaining);
 	end;
+end;
+
+procedure TBlake2b.Initialize;
+begin
+	FProcessed := 0;
+	FBufferLength := 0;
+
+	//Initialize state vector h with IV
+	Move(IV[0], h[0], 8*SizeOf(Int64));
+
+
+	// Mix key size (cbKeyLen) and desired hash length (cbHashLen) into h0
+	// 0x0101kknn
+	//       kk   is key length in bytes
+	//         nn is the desired hash length in bytes
+	h[0] := Int64(h[0] xor $01010000 xor (Length(FKey) shl 8) xor FDigestSize);
+
+	//If we were passed a key, then pad it to 128 bytes, and pass it as our first chunk
+	if Length(FKey) > 0 then
+	begin
+		ZeroMemory(@FBuffer[0], Length(FBuffer));
+		Move(FKey[0], FBuffer[0], Length(FKey));
+		FBufferLength := 128;
+		//We'll process it the next block we try to hash (even if that means during Finalize)
+	end;
+
+	FInitialized := True;
 end;
 
 function ROR64(const Value: Int64; const n: Integer): Int64;
@@ -1639,6 +1713,99 @@ end;
 
 {$OVERFLOWCHECKS ON}
 {$RANGECHECKS ON}
+
+{ TArgon2Hash }
+
+constructor TArgon2Hash.Create(DigestSize: Integer);
+begin
+	inherited Create;
+
+	FDigestSize := DigestSize;
+
+	FBlake2 := TArgon2.CreateHash('Blake2b', 64, Pointer(nil)^, 0) as IHashAlgorithm;
+	FBlake2.HashData(DigestSize, 4);
+end;
+
+function TArgon2Hash.Finalize: TBytes;
+var
+	cbRemaining: Integer;
+	nIndex: Integer;
+	data: TBytes;
+	finalBlake2b: IHashAlgorithm;
+begin
+	//If the requested digestSize is 64-bytes or lower, then use Blake2b directly
+	if FDigestSize <= 64 then
+	begin
+		//TODO: This should never actually happen; as Argon does everything in chunks of 64.
+		//Find out if this code can *ever* be hit, and if not; eliminate it.
+		if IsDebuggerPresent then
+			DebugBreak;
+		Result := FBlake2.Finalize;
+		if FDigestSize < 64 then
+		begin
+			SetLength(data, FDigestSize);
+			Move(Result[0], data[0], FDigestSize);
+			Result := data;
+		end;
+		Exit;
+	end;
+
+	{
+		For desired hashes over 64-bytes (e.g. 1024 bytes for Argon2 blocks),
+		we use Blake2b to generate twice the number of needed 64-byte blocks,
+		and then only use 32-bytes from each block
+	}
+	SetLength(Result, FDigestSize);
+	cbRemaining := FDigestSize;
+	nIndex := 0;
+
+	data := FBlake2.Finalize;
+	Move(data[0], Result[nIndex], 32);
+	Dec(cbRemaining, 32);
+	Inc(nIndex, 32);
+
+	while cbRemaining > 64 do
+	begin
+		FBlake2.HashData(data[0], 64);
+		data := FBlake2.Finalize;
+		Move(data[0], Result[nIndex], 32);
+		Inc(nIndex, 32);
+		Dec(cbRemaining, 32);
+	end;
+
+	if cbRemaining < 64 then
+	begin
+		//todo: this should never actually happen, as we do everything in 1024 chunks.
+		//Ensure that this never happens, and eliminate this safety check code path
+		if IsDebuggerPresent then
+			DebugBreak;
+		finalBlake2b := TArgon2.CreateHash('Blake2b', cbRemaining, Pointer(nil)^, 0) as IHashAlgorithm;
+		finalBlake2b.HashData(data[0], 64);
+		data := finalBlake2b.Finalize;
+	end
+	else
+	begin
+		FBlake2.HashData(data[0], 64);
+		data := FBlake2.Finalize;
+	end;
+
+	Move(data[0], Result[nIndex], cbRemaining);
+end;
+
+function TArgon2Hash.GetBlockSize: Integer;
+begin
+	Result := 64;
+end;
+
+function TArgon2Hash.GetDigestSize: Integer;
+begin
+	Result := FDigestSize;
+end;
+
+procedure TArgon2Hash.HashData(const Buffer; BufferLen: Integer);
+begin
+	FBlake2.HashData(Buffer, BufferLen);
+end;
 
 end.
 

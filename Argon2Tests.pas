@@ -14,6 +14,8 @@ type
 		function GetBlake2bKeyedTestVector(Index: Integer): string;
 		procedure CheckEqualsBytes(ExpectedBytes, ActualBytes: TBytes; msg: string='');
 		function Blake2b(const Data; DataLen: Integer; DesiredBytes: Integer; const Key; KeyLen: Integer): TBytes;
+		function GetExpectedH0: TBytes;
+		function GetExpectedInitalBlock(Column, Lane: Integer): TBytes;
 	published
 		procedure Test_ROR64;
 		procedure Blake2b_SpeedTest;
@@ -30,6 +32,7 @@ type
 		procedure Test_ParseHashString_VerisonOptional;
 
 		procedure Test_ArgonSeedBlockH0;
+		procedure Test_ArgonInitialBlocks;
 		procedure Test_Argon2i;
 	end;
 
@@ -274,6 +277,72 @@ begin
 	CheckEqualsBytes(expected, actual);
 end;
 
+procedure TArgon2Tests.Test_ArgonInitialBlocks;
+var
+	password: TBytes;
+	salt: TBytes;
+	ar: TArgon2;
+	h0: TBytes;
+	block00, block01: TBytes; //Lane 0
+	block10, block11: TBytes; //Lane 1
+	block20, block21: TBytes; //Lane 2
+	block30, block31: TBytes; //Lane 3
+	expected: TBytes;
+begin
+	{
+		Argon2d test vector
+		https://tools.ietf.org/id/draft-irtf-cfrg-argon2-03.html#rfc.section.6.1
+	}
+	password := TBytes.Create(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1); //32 bytes of 1
+
+	//Argon2i
+	ar := TArgon2i.Create;
+	try
+		ar.MemorySizeKB := 32; //32 KiB
+		ar.Iterations := 3;
+		ar.DegreeOfParallelism := 4; //4 lanes (threads)
+		ar.Salt := TBytes.Create(2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2); //16 bytes of 2
+		ar.KnownSecret := TBytes.Create(3, 3, 3, 3, 3, 3, 3, 3); //8 bytes of 3
+		ar.AssociatedData := TBytes.Create(4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4); //12 bytes 12
+
+		//Generate H0 seed block (and make sure it's correct)
+		h0 := TArgon2Friend(ar).GenerateSeedBlock(password[0], Length(password), 32);
+		expected := Self.GetExpectedH0;
+		CheckEqualsBytes(expected, h0);
+
+		//Lane 0
+		block00 := TArgon2Friend(ar).GenerateInitialBlock(h0, 0, 0);
+		block01 := TArgon2Friend(ar).GenerateInitialBlock(h0, 1, 0);
+		//Lane 1
+		block10 := TArgon2Friend(ar).GenerateInitialBlock(h0, 0, 1);
+		block11 := TArgon2Friend(ar).GenerateInitialBlock(h0, 1, 1);
+		//Lane 2
+		block20 := TArgon2Friend(ar).GenerateInitialBlock(h0, 0, 2);
+		block21 := TArgon2Friend(ar).GenerateInitialBlock(h0, 1, 2);
+		//Lane 3
+		block30 := TArgon2Friend(ar).GenerateInitialBlock(h0, 0, 3);
+		block31 := TArgon2Friend(ar).GenerateInitialBlock(h0, 1, 3);
+	finally
+		ar.Free;
+	end;
+
+	//Column 0, Lane 0
+	expected := GetExpectedInitalBlock(0, 0);
+	CheckEqualsBytes(expected, block00);
+
+	//Column 1, Lane 0
+	expected := GetExpectedInitalBlock(1, 0);
+	CheckEqualsBytes(expected, block01);
+
+	//Column 0, Lane 3
+	expected := GetExpectedInitalBlock(0, 3);
+	CheckEqualsBytes(expected, block30);
+
+	//Column 1, Lane 3
+	expected := GetExpectedInitalBlock(1, 3);
+	CheckEqualsBytes(expected, block31);
+end;
+
 procedure TArgon2Tests.Test_ArgonSeedBlockH0;
 var
 	password: TBytes;
@@ -296,17 +365,12 @@ begin
 		ar.Salt := TBytes.Create(2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2); //16 bytes of 2
 		ar.KnownSecret := TBytes.Create(3, 3, 3, 3, 3, 3, 3, 3); //8 bytes of 3
 		ar.AssociatedData := TBytes.Create(4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4); //12 bytes 12
-		actual := TArgon2Friend(ar).GenerateInitialBlock(password[0], Length(password), 32);
+		actual := TArgon2Friend(ar).GenerateSeedBlock(password[0], Length(password), 32);
 	finally
 		ar.Free;
 	end;
 
-	expected := TBytes.Create(
-			$c4, $60, $65, $81, $52, $76, $a0, $b3, $e7, $31, $73, $1c, $90, $2f, $1f, $d8,
-			$0c, $f7, $76, $90, $7f, $bb, $7b, $6a, $5c, $a7, $2e, $7b, $56, $01, $1f, $ee,
-			$ca, $44, $6c, $86, $dd, $75, $b9, $46, $9a, $5e, $68, $79, $de, $c4, $b7, $2d,
-			$08, $63, $fb, $93, $9b, $98, $2e, $5f, $39, $7c, $c7, $d1, $64, $fd, $da, $a9);
-
+	expected := Self.GetExpectedH0;
 	CheckEqualsBytes(expected, actual);
 end;
 
@@ -819,6 +883,171 @@ begin
 		Result := '';
 	end;
 
+end;
+
+function TArgon2Tests.GetExpectedH0: TBytes;
+begin
+	Result := TBytes.Create(
+			$c4, $60, $65, $81, $52, $76, $a0, $b3, $e7, $31, $73, $1c, $90, $2f, $1f, $d8,
+			$0c, $f7, $76, $90, $7f, $bb, $7b, $6a, $5c, $a7, $2e, $7b, $56, $01, $1f, $ee,
+			$ca, $44, $6c, $86, $dd, $75, $b9, $46, $9a, $5e, $68, $79, $de, $c4, $b7, $2d,
+			$08, $63, $fb, $93, $9b, $98, $2e, $5f, $39, $7c, $c7, $d1, $64, $fd, $da, $a9);
+end;
+
+function TArgon2Tests.GetExpectedInitalBlock(Column, Lane: Integer): TBytes;
+var
+	expected: TArray<UInt64>;
+begin
+	if (Lane=0) and (Column=0) then
+	begin
+		expected := TArray<UInt64>.Create(
+			$f8f9e84545db08f6, $9b073a5c87aa2d97, $d1e868d75ca8d8e4, $349634174e1aebcc,
+			$eea679ca0b5f6de1, $28f43caf97eba539, $0f7895c9d5b3a714, $34ee3afb003414a8,
+			$19e25e3ad0aea4dd, $0621947f5c64686c, $f9eb4d3b70a00365, $29d30205ecdbbfdd,
+			$bd82cd842052f713, $e465f1dd3eb4d797, $56769e2b75d3d2e7, $fa423c1914be7eea,
+			$62c74952efa4962e, $7452bcfeae5ed127, $9b244b507058a767, $ad381b104b333277,
+			$d74814cfe245d0a8, $1e502a5c5fae8de4, $facc3eb8b94d3934, $309a560639f36145,
+			$97c9414271065971, $9d2d8e80f0b210fd, $8ad91ada654260d9, $e8f0199dc84ec601,
+			$259b8023dfe9f620, $a89f710764c84faa, $00ef7d0ed19c9170, $c3365e9be7f8ad9a,
+			$0713eccea1449c39, $76dfdcbc5418ca19, $6dae38246899edb4, $d119c2592c32d2fd,
+			$12588a09c09fa985, $fd7de45ad68146e2, $b8b2a32696f86ff5, $7a8597fe96c79b15,
+			$0b1c32b869e29e8e, $d109376ce2cd296a, $5930033519fbc3ea, $26c0615c70db9a06,
+			$c52e63756eb284d6, $f46353b6fa27de93, $c3f16cd0bf50beb1, $7cbb5010db6ca163,
+			$6df6fb9d5477cb8d, $f76c9bc2200b9271, $4307dd8d26190968, $559d187e7f15ce59,
+			$3fa3181855fc8fae, $8a5c7a26545c3289, $6e0dab49fbd175c9, $162d68393ba63961,
+			$7e8bf654d150b577, $245981b04758d084, $b94c1f15f33a00c3, $09b776c573975316,
+			$e059c7959776505f, $c8dec45d870e2428, $9d05dd926cbe5e24, $07eadbb03290625e,
+			$1813e236d70246c4, $6b9e88ab27f282a1, $8cab57c214d0e51b, $819344c6d98d7949,
+			$642adef349e0b4c2, $9147532626665562, $4ce7940e9759fa18, $86d723f5cb5bfa23,
+			$5956a509891d3a19, $fb65eb9452479fe5, $15600005da769dbc, $0460dfcc45a3df4c,
+			$9aeaf38a4e4a76a9, $a32de9ae286662a0, $6c77f20cb87d260b, $b4ee4f5014fe19b3,
+			$786e8758451fedc0, $9f8a3f5a0bea80d5, $1f5ed85ddaa1bb51, $431138b634bdf789,
+			$8fee5e61ed0f3a28, $3f166d47f662999d, $01825a35d081ba83, $363beef46f72e254,
+			$c0404cbcaeb8b1e5, $bf01bb3491b46fd2, $a96f73ec77d2ea1b, $7307883b0bb3368c,
+			$180c75845418050e, $9fdd76f0e4c993c1, $d27430c09a31f795, $b16a193a47b44cd5,
+			$07213b9404ed4cf7, $71794be1c4c5f86a, $46ac3a39882cffc5, $b607228f89c849b3,
+			$a686fe80a061b73d, $5da420bbf2060e84, $41d90855f9cfdd8a, $0bd841213cab1533,
+			$f2c61ec90b666394, $2ccdba05749dfd50, $892110f27c3b5cec, $83a48c906e85ec88,
+			$9e47d91d9fd201f6, $b63a128d51ad43c8, $b704ba46fcf4e5ff, $b12ae3f3cd72953c,
+			$757f5ab719072f8f, $7aa97ff2970a4983, $26d6bfd165886039, $e7adc882d7cb951b,
+			$ada2f6156a676320, $171d0b6b8aa5a810, $23bed4ea02a196ee, $02f0188d935ab1ca,
+			$35587bbaae997e8f, $e019dc02fbbd82c7, $f6075ab25dbcf553, $fb9083c228f4a752,
+			$9d15acfaa9b10ba4, $f0a6348c8d1d5414, $3677542aa326e00f, $4243b9abcf3da44a);
+	end
+	else if (Lane=0) and (column=1) then
+	begin
+		expected := TArray<UInt64>.Create(
+			$ef764133b4ca7099, $620440b335cfe9e1, $57168a36ebcb7715, $ff3b0b0f3930071d,
+			$45172aba01f6fb3f, $0e1606b528bbcc18, $45e18c0a19181cfc, $82bfbe0920b6587e,
+			$3bab67fb1c68f77a, $56c49774a6130f3b, $3a6dfe75c9eb7f87, $73c5e435e706cfe0,
+			$4c99046a73c091a9, $af7daf0a40e91b94, $9da14c9e8cbb3ecb, $60440e10556a8e9e,
+			$83353ede182e7349, $2421e9e19a58a64d, $f1eb1a9a17260a7a, $a1898333c9e704ba,
+			$159219bddbc57599, $dfbe30755288733b, $fe9df8f860580019, $16a1ca7d3854643e,
+			$485e3ac74e7231ba, $beebe23e664c4a95, $c9049347422d9e0d, $4d88f3373c446af7,
+			$b83c654f54013a30, $75b41709be2283c4, $83f2efbed5b0d3f0, $04629de997b1b2b0,
+			$583c5766265c50fe, $e0306a89eb326efd, $5c1f148541f18e2c, $0462bd80b505f544,
+			$afa70cd1847e14ba, $4a107dc0330d7392, $a41d234f92da5fef, $5c1f1ef242e817ac,
+			$4c21ded5b41e4094, $5382efd3508c2e0c, $f99d3383b9f79cd4, $c59cf9cca42b6c3c,
+			$c1073a16b4609c9e, $eeb0741015c0bec1, $59fdebef1fa66310, $ac6041a2f43ddf7e,
+			$1dfa0e2d9bf3acf9, $d424856738a27879, $a00c23feea1774f4, $89aa283bcb83e2ea,
+			$d5c467511139648b, $736a35cbe2be51a7, $2a9a116684b668a6, $6c97a9ae3f327f6e,
+			$7a37d7d11fa226a1, $e933955bb195f86f, $33e0ba8e788c608b, $b191c25233ce5744,
+			$a47cbd502d3d657d, $9373f7d43329517c, $69c08268cd250f03, $64806d4cebc49823,
+			$51b7c4d051e70e05, $91598eb48764ed2c, $b9be7ab1d422d2c3, $eb4243989b24e6da,
+			$0df9fb33ec5a2734, $db21c080fd6a4f45, $b33850abcfdd0713, $7dad7d9d0be16da2,
+			$ae3ccab55493d758, $d0d752f17120f636, $bc9d875ca9a5617b, $f71b4218c11d1de7,
+			$b71c8b9ad12f8574, $1f47cd7880ee5f60, $7e94dcef68d5437b, $5212acee74773cd5,
+			$447fe1f91d18984b, $42b651bbf71123bf, $a36cbec05af8a16e, $f0062604e61b9562,
+			$8de69b3901f9beed, $0ef87138213d49bb, $ac23b588ee62df85, $214784f404183fc6,
+			$80bd01721550b847, $477d6c0b7cde2cbe, $52854d28f1c327ef, $6d023ae28c3aa0b8,
+			$ad28349b9fb94455, $9f03641c1e41fd77, $b7f2c676f362a9eb, $66974a6cf91ef0f3,
+			$767da5d9fc567f54, $43b4c5bd3a112b5f, $d14f0ebe0a796ebe, $e4a7ade650871550,
+			$8841858fab3bbc24, $9bf02ae3876cee46, $fb3d03e3030580de, $3cd714a5f553c6ae,
+			$7301e5f821f928da, $c2fc74e88d5b7cff, $6161d5101e4fd223, $45cf0588a9a55a41,
+			$77902bd3439bf89d, $6fa5269812f867d1, $2caa21dbd02ea223, $b776e0d326f8bf2b,
+			$3f3959f6cf241888, $e2ad2d05b2095775, $08403c042f8bfe87, $2ee327dcc9e04a69,
+			$6031d492c05b0970, $9b6f35141994e4a4, $24427c298a09f2a6, $3325ce5ef7c363fe,
+			$5821f16b64830335, $18d3c2a72d220c00, $60c684f8541cdb39, $53e20b76bdc07a15,
+			$396fd953e51a57f7, $6c45c1dd68804fbb, $386e57e7fe152c87, $2b8ab7d454b17187);
+	end
+	else if (Lane=3) and (column=0) then
+	begin
+		expected := TArray<UInt64>.Create(
+			$421df20d08fd899e, $06490f067ca5f4c0, $4b7bab14d2317386, $928cb31a919ac9e0,
+			$8eeb69c9bf35ca26, $3b871b2affbf59cb, $9a44775f57d70b0c, $d1753e76fd4cd2f5,
+			$23beccd32f5a538c, $26cb1bfdc1bfe467, $d27541618bf4a7a7, $0aa0a42080544478,
+			$bc8f20da1a6e40e4, $e875b5a98a112900, $ca61219887cb4959, $e2493c2da5dc45cc,
+			$376be64ae523a96d, $bc26c2991a963b5d, $d507fa831eb0b11c, $cbb1fae2e8a7724d,
+			$0d57265e72b6fcaf, $57bda72893b0ba2c, $b1dfd60192386ed2, $dcfe908cf1bed33c,
+			$3cf2ae1e6ba2f37b, $c26c60ad1b72cec6, $227b729e4be43c89, $f1698cc673f4b33d,
+			$6d6a36ee935bd1be, $e044d40fe77c96fd, $51f025fc9570d3b1, $9047ccdcadfba8f3,
+			$4fbfd7f34c1fc530, $a21db2877a70cffe, $6779dd725caffcfa, $abd46d03ab30e7e8,
+			$3df9ce3d3f9b8d77, $79c4e82b1d66f2b2, $f6e56a9befd85521, $63effa4aac8c722f,
+			$5d95c78b470b652b, $0d49b3bd5c53de96, $677fdc7ac25e2963, $64cf061a259c532e,
+			$2f9da934b23e75a0, $b8889059afbcd633, $87268a47bdacb91a, $bdd1d344a00442ce,
+			$ed2fb8fcfcccfd0f, $9702e80222aaa0a2, $b59fd3607c6f4a99, $b5a3abe17118d3f5,
+			$b36e4548145308e8, $9f58a90d739baeb2, $949e5504da615608, $8be00e3ae5fe9cae,
+			$32c6269ff1f417d3, $a0fd7a40f50436bc, $804eddf125b05db8, $e412fa3b09805e30,
+			$ee38f256fefee213, $4700102c10caca7b, $7c72c70089dfa961, $bab72c9336d9b835,
+			$2146a5760b289949, $9d3846479be2a556, $6a81e0b707146bbc, $7648f0711580ddfe,
+			$aab8aee50021b344, $38f296313d23ec72, $04b4905eaec03ac5, $fe0f55aaeb91559f,
+			$5fb453a232b4a989, $daa1ab85149235e2, $c825ee74fa3cfa1b, $6113b7f6fa3aa5fa,
+			$9f3e6aea3b3be4d5, $f7d471f5f8ae3ce3, $c68f97bfab689e30, $b7c234060a797abf,
+			$6041520f55b95a30, $56ea11838e34faab, $e2fa113ac34a4e76, $952a842f6f1f0ea6,
+			$2bcdfb5279443993, $10946fdd29e96316, $5f908e7a28f81708, $d289b647f332fbe9,
+			$f16d8e959f359c08, $18601d046daf6b9f, $66214e8c17b7a365, $c6c7b0aeef79013c,
+			$dc20cc64d5a79a4c, $5187e9a6ff899eb1, $730cac806359e63c, $9691bae04c4bbd94,
+			$0fa7b3a871abe79d, $b3a3883ad7a4e928, $f1b2d895589851d8, $6f905a6249a50eae,
+			$4cf1840c45bca0d9, $782e7ffb69c668aa, $fe55c440f0227790, $dec111756b979cbc,
+			$9e1621f10dc6142e, $af92a355e0758599, $1f85ba4b4b00884b, $aff87e8f36e044cf,
+			$87667d6990985f08, $5e7d62dd0e2b654a, $984eeff01ce256d9, $5d76c092a79bca15,
+			$cb2ff31e3e9de68d, $a4a6cc101833f846, $0eeb05c1eac92920, $3795d878dfbaaa3c,
+			$a363bb42a0bf4fd4, $212c42d91a79e145, $844305ca7ebe404e, $c23c2a10a961d67c,
+			$2038404d2ceadec9, $71f48b5bff5b4c03, $00d97ddde74a8b18, $d4a629a0f481c37b,
+			$a31ac02725842396, $26c90ede186fd85f, $32d3c3f0385d16a2, $a58053f744dc93ad);
+
+	end
+	else if (Lane=3) and (column=1) then
+	begin
+		expected := TArray<UInt64>.Create(
+			$75e219ce652f9e9b, $5192d14a2c29f461, $ecadcc07806d90a7, $cb8f9debaf8159b8,
+			$922fd6b8cb6a2641, $fc1677aa64a158b1, $0c24c2820ef42f14, $b3cd3deb0443f694,
+			$52b0ac996c835048, $7b69b5d070589932, $0381d9fcdb0803a1, $d7cf49bf4207a833,
+			$64bc64f604b3f54e, $b37bfc379b820700, $f6fcf8867e9ed30a, $2cf52fe2e641e6cd,
+			$d9b5d1d957265528, $456c76fd493723d9, $d09ec25592ba65e1, $74ead8f490ea2724,
+			$1fcd94f345103418, $28191af193f3b4a8, $00ba309bea6bc75e, $f820f928e042b770,
+			$0096864fb4a6195a, $1deb4dd4d925fc05, $28e822e800e1f326, $8a9e61f3ff3536f6,
+			$7bd53608d022cc05, $dc1da98bfbf23a80, $335ec2757c72f04a, $c699727d298109d9,
+			$5c4f4efb6a24011c, $45abc8326a1c11a6, $ea1ec080a5afa957, $c710f53a3016e4cf,
+			$48bc8eae571960ee, $9717942f28632927, $baefc76649ee961b, $913d6a3d5cbebe92,
+			$3d486447ff8cdeb9, $738e311c3606c310, $752814a9b8a98007, $ea80a6739c87925e,
+			$d05607c48043b531, $4e8077320bcb121a, $db134a8b3ce51f86, $a3b62a8db4d931cb,
+			$479838f512a07a3c, $ad416f96a9c1dc62, $2ce8d6c41e022354, $02e88e689bb3c9bc,
+			$4c4fa4dfd77f1efc, $e481206da484d670, $43a91e27c52cb0de, $9a3863141390c605,
+			$db07004e00d8628d, $b05ad69ed0d8db58, $aa78c6f41ae31f4c, $372bc9ff8debf9a9,
+			$832af3443b613cd2, $10176ea29c715def, $f1ae3f51da186219, $eb93e663b63849a0,
+			$0a10808e97df2cc8, $0a8b16edfe0a46d6, $25ee9dabd8559f47, $aae095f6613e07f8,
+			$6dee9a39650d583a, $c8da4f9ba5efc464, $2057651e6272cecf, $5bcf7937a601500b,
+			$8c3097be523605ec, $12008ec70fc55a6b, $1dc40873a708a3a0, $8550840bfb0b2a74,
+			$71b76f86ed93b236, $ada3b0d78299d2f3, $196bbca1dd53c6ba, $25ae9a9b7a909ffd,
+			$8332bc00f837a920, $bb13e06b3dcd6274, $724e07a3c76bdcd3, $c11a941aa4678ac6,
+			$d69d1f13fabb164e, $2d518e00e58c92ea, $698ecf7437bf07dc, $c5758b279f98a217,
+			$4ace1d8069fb04c7, $3a6848ca135c48a1, $1284342c28b552e4, $a7bf09a8fb448bce,
+			$23652822eef77d5b, $ede7aa7d9975c43e, $ec8d6127d93a7b37, $38f50b3d0f17f5c9,
+			$91a10d4b7fe9f30b, $63112ee0f40a6241, $fad7e72daa8ad18d, $07e0f4d64d5744cc,
+			$aafbd22997d5cb7c, $76e6e220725528df, $d540860ca129a3d4, $c652f20d7f2dafc6,
+			$39619c788de5f720, $b1153fbf6bc05c68, $7936d6405a7745b0, $69e1ea5b7dddab89,
+			$a535615b5285f419, $c7039ed18206a233, $0edf3cf1262dcd26, $1f0b4499b2b9e8b2,
+			$671bed1ce2de5052, $0e8b79824c58ca80, $874458d3d760dd5a, $249f129d67cf59a5,
+			$bc6962f83ec41f7d, $3b5b2bf5dbba3f76, $bc3213efa967e1e2, $6a9208a3b0e96a13,
+			$4cc594a949c15018, $edc4f2d74b9ed106, $17189edb9d25be84, $335cacc975861bdb,
+			$4e40d19267f33144, $fe8b5e16f077d4dd, $eef70082d8d8ca4d, $0e35a18383368440);
+	end
+	else
+		raise ETestError.CreateFmt('No expected test vector recorded for Lane %d, Column %d', [lane, column]);
+
+	SetLength(Result, Length(expected)*SizeOf(UInt64));
+	Move(expected[0], Result[0], Length(Result));
 end;
 
 procedure TArgon2Tests.CheckEqualsBytes(ExpectedBytes, ActualBytes: TBytes; msg: string);
