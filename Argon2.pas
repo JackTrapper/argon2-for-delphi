@@ -64,7 +64,7 @@ type
 		function GenerateSeedBlock(const Passphrase; PassphraseLength, DesiredNumberOfBytes: Integer): TBytes;
 		function GenerateInitialBlock(const H0: TBytes; ColumnIndex, LaneIndex: Integer): TBytes;
 		class procedure BurnBytes(var data: TBytes);
-		class function StringToUtf8(const Source: UnicodeString): TBytes;
+		class function PasswordStringPrep(const Source: UnicodeString): TBytes;
 
 		class function Base64Encode(const data: array of Byte): string;
 		class function Base64Decode(const s: string): TBytes;
@@ -80,7 +80,7 @@ type
 
 		procedure GetDefaultParameters(out Iterations, MemoryFactor, Parallelism: Integer);
 		function TryParseHashString(HashString: string; out Algorithm: string; out Version, Iterations, MemoryFactor, Parallelism: Integer; out Salt: TBytes; out Data: TBytes): Boolean;
-		function FormatPasswordHash(const Algorithm: string; Version: Integer; const Iterations, MemoryFactor, Parallelism: Integer; const Salt, DerivedBytes: array of Byte): string;
+		function FormatPasswordHash(const Algorithm: string; Version: Integer; const Iterations, MemorySizeKB, Parallelism: Integer; const Salt, DerivedBytes: array of Byte): string;
 
 		class function CreateHash(AlgorithmName: string; cbHashLen: Integer; const Key; const cbKeyLen: Integer): IUnknown;
 	public
@@ -576,17 +576,16 @@ begin
 end;
 
 function TArgon2.FormatPasswordHash(const Algorithm: string; Version: Integer;
-		const Iterations, MemoryFactor, Parallelism: Integer; const Salt, DerivedBytes: array of Byte): string;
+		const Iterations, MemorySizeKB, Parallelism: Integer; const Salt, DerivedBytes: array of Byte): string;
 var
 	saltString: string;
 	hashString: string;
-	KBRequired: Integer; //2^MemoryFactor = KB = KiB
 begin
 	{
 		Type:           Argon2i
 		Version:        19
 		Iterations:     2
-		Memory:         16 ==> 2^16 = 65536 = 65536 KB
+		MemorySizeKB:   65536 = 65536 KB
 		Parallelism:    4
 		Salt:           736F6D6573616c74
 		Hash:           45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6
@@ -595,14 +594,14 @@ begin
 	}
 	saltString := Base64Encode(Salt);
 	hashString := Base64Encode(DerivedBytes);
-	KBRequired := 1 shl MemoryFactor;
 
 	Result := Format('$%s$v=%d$m=%d,t=%d,p=%d$%s$%s', [
-			Algorithm,     //"argon2i", "argon2d"
-			Version,       //19
-			KBRequired,    //65535 KB
-			Parallelism,   //4
-			saltString,    //"c29tZXNhbHQ"
+			Algorithm,		//"argon2i", "argon2d", "argon2id"
+			Version,			//19 (optional)
+			MemorySizeKB,	//65535 KB
+			Iterations,		//1 iterations
+			Parallelism,	//4 threads
+			saltString,		//"c29tZXNhbHQ"
 			hashString		//"RdescudvJCsgt3ub+b+dWRWJTmaaJObG"
 	]);
 end;
@@ -850,7 +849,7 @@ begin
 	try
 		salt := ar.GenerateSalt;
 
-		utf8Password := TArgon2.StringToUtf8(Password);
+		utf8Password := TArgon2.PasswordStringPrep(Password);
 		try
 			derivedBytes := TArgon2.DeriveBytes(utf8Password, Length(Password)*SizeOf(WideChar), salt, Iterations, MemorySizeKB, Parallelism, 32);
 		finally
@@ -863,47 +862,103 @@ begin
 	end;
 end;
 
-class function TArgon2.StringToUtf8(const Source: UnicodeString): TBytes;
+procedure BurnString(var s: UnicodeString);
+begin
+	if Length(s) > 0 then
+	begin
+		UniqueString({var}s); //We can't FillChar the string if it's shared, or its in the constant data page
+		FillChar(s[1], Length(s), 0);
+		s := '';
+	end;
+end;
+
+class function TArgon2.PasswordStringPrep(const Source: UnicodeString): TBytes;
 var
+	normalizedLength: Integer;
+	normalized: UnicodeString;
 	strLen: Integer;
 	dw: DWORD;
 const
 	CodePage = CP_UTF8;
+	SLenError = '[PasswordStringPrep] Could not get length of destination string. Error %d (%s)';
+	SConvertStringError = '[PasswordStringPrep] Could not convert utf16 to utf8 string. Error %d (%s)';
 begin
-{
-	For Argon2 passwords we will use UTF-8 encoding.
-}
-//	Result := TEncoding.UTF8.GetBytes(s);
-
 	if Length(Source) = 0 then
 	begin
 		SetLength(Result, 0);
 		Exit;
 	end;
 
-	// Determine real size of destination string, in bytes
-	strLen := WideCharToMultiByte(CodePage, 0,
-			PWideChar(Source), Length(Source), //Source
-			nil, 0, //Destination
-			nil, nil);
-	if strLen = 0 then
+	{
+		NIST Special Publication 800-63-3B (Digital Authentication Guideline - Authentication and Lifecycle Management)
+		https://pages.nist.gov/800-63-3/sp800-63b.html
+
+		Reminds us to normalize the string (using either NFKC or NFKD).
+			- K (Compatibility normalization): decomposes ligatures into base compatibilty characters
+			- C (Composition):                 adds character+diacritic into single code point (if possible)
+			- D (Decomposition):               separates an accented character into the letter and the diacritic
+
+		SASLprep (rfc4013), like StringPrep (rfc3454) both specified NFKC:
+
+			Before: Noe¨l
+			After:  Noël
+	}
+
+	//We use concrete variable for length, because i've seen it return asking for 64 bytes for a 6 byte string
+//	normalizedLength := NormalizeString(5, PWideChar(Source), Length(Source), nil, 0);
+	normalizedLength := FoldString(MAP_FOLDCZONE, PWideChar(Source), Length(Source), nil, 0);
+	if normalizedLength = 0 then
 	begin
 		dw := GetLastError;
-		raise EConvertError.Create('[StringToUtf8] Could not get length of destination string. Error '+IntToStr(dw)+' ('+SysErrorMessage(dw)+')');
+		raise EConvertError.CreateFmt(SLenError, [dw, SysErrorMessage(dw)]);
 	end;
 
 	// Allocate memory for destination string
-	SetLength(Result, strLen);
+	SetLength(normalized, normalizedLength);
 
-	// Convert source UTF-16 string (UnicodeString) to the destination using the code-page
-	strLen := WideCharToMultiByte(CodePage, 0,
-			PWideChar(Source), Length(Source), //Source
-			PAnsiChar(@Result[0]), strLen, //Destination
-			nil, nil);
-	if strLen = 0 then
-	begin
-		dw := GetLastError;
-		raise EConvertError.Create('[StringToUtf8] Could not convert utf16 to utf8 string. Error '+IntToStr(dw)+' ('+SysErrorMessage(dw)+')');
+	// Now do it for real
+	try
+//		normalizedLength := NormalizeString(5, PWideChar(Source), Length(Source), PWideChar(normalized), Length(normalized));
+		normalizedLength := FoldString(MAP_FOLDCZONE, PWideChar(Source), Length(Source), PWideChar(normalized), Length(normalized));
+		if normalizedLength = 0 then
+		begin
+			dw := GetLastError;
+			raise EConvertError.CreateFmt(SLenError, [dw, SysErrorMessage(dw)]);
+		end;
+
+		{
+			Now perform the conversion of UTF-16 to UTF-8
+		}
+		// Determine real size of destination string, in bytes
+		strLen := WideCharToMultiByte(CodePage, 0,
+				PWideChar(normalized), normalizedLength, //Source
+				nil, 0, //Destination
+				nil, nil);
+		if strLen = 0 then
+		begin
+			dw := GetLastError;
+			raise EConvertError.CreateFmt(SLenError, [dw, SysErrorMessage(dw)]);
+		end;
+
+		// Allocate memory for destination string
+		SetLength(Result, strLen+1); //+1 for the null terminator
+
+		// Convert source UTF-16 string (WideString) to the destination using the code-page
+		strLen := WideCharToMultiByte(CodePage, 0,
+				PWideChar(normalized), normalizedLength, //Source
+				PAnsiChar(Result), strLen, //Destination
+				nil, nil);
+		if strLen = 0 then
+		begin
+			dw := GetLastError;
+			raise EConvertError.CreateFmt(SConvertStringError, [dw, SysErrorMessage(dw)]);
+		end;
+
+		//Set the null terminator
+		Result[strLen] := 0;
+	finally
+		//Burn the intermediate normalized form
+		BurnString(normalized);
 	end;
 end;
 
@@ -1101,6 +1156,9 @@ begin
 
 	Salt := TArgon2.Base64Decode(tokens[currIndex]);
 	Inc(currIndex);
+
+	if currIndex > High(tokens) then
+		Exit;
 
 	Data := TArgon2.Base64Decode(tokens[currIndex]);
 
