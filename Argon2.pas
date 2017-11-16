@@ -64,7 +64,7 @@ type
 		function GenerateSeedBlock(const Passphrase; PassphraseLength, DesiredNumberOfBytes: Integer): TBytes;
 		function GenerateInitialBlock(const H0: TBytes; ColumnIndex, LaneIndex: Integer): TBytes;
 		class procedure BurnBytes(var data: TBytes);
-		class function PasswordStringPrep(const Source: UnicodeString): TBytes;
+		class function PasswordStringPrep(Source: UnicodeString): TBytes;
 
 		class function Base64Encode(const data: array of Byte): string;
 		class function Base64Decode(const s: string): TBytes;
@@ -869,12 +869,13 @@ begin
 	end;
 end;
 
-class function TArgon2.PasswordStringPrep(const Source: UnicodeString): TBytes;
+class function TArgon2.PasswordStringPrep(Source: UnicodeString): TBytes;
 var
 	normalizedLength: Integer;
 	normalized: UnicodeString;
 	strLen: Integer;
 	dw: DWORD;
+	i: Integer;
 const
 	CodePage = CP_UTF8;
 	SLenError = '[PasswordStringPrep] Could not get length of destination string. Error %d (%s)';
@@ -896,7 +897,6 @@ begin
 			- D (Decomposition):               separates an accented character into the letter and the diacritic
 
 		SASLprep (rfc4013) says to use NFKC:
-
 
 			2.2.  Normalization
 
@@ -1023,6 +1023,17 @@ begin
 
 			This is handled by NFC.
 	}
+
+	//Convert any spaces (Unicode category Z) into canonical U+0020
+	for i := 1 to Length(Source) do
+	begin
+		case Word(Source[i]) of
+		$00A0, $1680, $2000, $2001, $2002, $2003, $2004, $2005, $2006, $2007, $2008, $2009, $200A, $202F, $205F, $3000:
+			begin
+				Source[i] := #$0020;
+			end;
+		end;
+	end;
 
 	//We use concrete variable for length, because i've seen it return asking for 64 bytes for a 6 byte string
 //	normalizedLength := NormalizeString(5, PWideChar(Source), Length(Source), nil, 0);

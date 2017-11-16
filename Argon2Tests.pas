@@ -34,12 +34,13 @@ type
 
 		procedure Test_ArgonSeedBlockH0;
 		procedure Test_ArgonInitialBlocks;
-		procedure Test_Argon2i;
 
-		procedure UnicodeCompatibleComposition; //check that we use unicode compatible composition (NFC) on passwords (NIST SP 800-63B)
-		procedure SASLprep; //SASLprep rules for passwords
+		procedure UnicodeNormalizationComposition; //check that we use unicode compatible composition (NFC) on passwords (NIST SP 800-63B)
+		procedure PasswordPrep_HalfWidthFullWidth; //SASLprep rules for passwords
+		procedure PasswordPrep_Spaces; //convert all Z category spaces to U+0020
 		procedure NormalizedPasswordsMatch; //check that composed and decomposed strings both validate to the same
 
+		procedure Test_Argon2i;
 	end;
 
 implementation
@@ -127,10 +128,9 @@ begin
 	CheckTrue(bRes, 'Passwords "'+password1+'" and "'+password2+'" do not validate to each other');
 end;
 
-procedure TArgon2Tests.SASLprep;
+procedure TArgon2Tests.PasswordPrep_HalfWidthFullWidth;
 var
 	pass: UnicodeString;
-
 begin
 	{
 		SASLprep rules for passwords
@@ -161,8 +161,7 @@ begin
 			U+FF54  FULLWIDTH LATIN SMALL   LETTER t   UTF8 0xEF 0xBD 0x94
 	}
 	pass := #$ff34 + #$ff45 + #$ff53 + #$ff54;
-	TestStringPrep(pass, [$ef, $bc, $b4, $ef, $bd, $85, $bd, $93, $ef, $bd, $94, 0]);
-
+	TestStringPrep(pass, [$ef, $bc, $b4, $ef, $bd, $85, $ef, $bd, $93, $ef, $bd, $94, 0]);
 
 	{
 		Halfwidth
@@ -176,12 +175,30 @@ begin
 	}
 	pass := #$ffc3;
 	TestStringPrep(pass, [$ef, $bf, $83, 0]);
+end;
 
-
+procedure TArgon2Tests.PasswordPrep_Spaces;
+var
+	pass: UnicodeString;
+begin
 	{
-		2.  Additional Mapping Rule: Any instances of non-ASCII space MUST be mapped to ASCII space (U+0020);
-			 a non-ASCII space is any Unicode code point having a Unicode general category of "Zs"
-			 (with the  exception of U+0020).
+		SASLprep rules for passwords
+		RFC7613 (SASLprep) specifies that we must normalize
+			https://tools.ietf.org/html/rfc7613
+			 Preparation, Enforcement, and Comparison of Internationalized Strings Representing Usernames and Passwords
+
+		4.2.2.  Enforcement
+
+		1. Width-Mapping Rule: Fullwidth and halfwidth characters MUST NOT be mapped to their decomposition mappings
+			(see Unicode Standard Annex #11 [UAX11](https://tools.ietf.org/html/rfc7613#ref-UAX11)).
+
+
+		2. Additional Mapping Rule: Any instances of non-ASCII space MUST be mapped to ASCII space (U+0020);
+			a non-ASCII space is any Unicode code point having a Unicode general category of "Zs" (with the exception of U+0020).
+
+		3. Case-Mapping Rule: Uppercase and titlecase characters MUST NOT be mapped to their lowercase equivalents.
+
+		4.  Normalization Rule: Unicode Normalization Form C (NFC) MUST be applied to all characters.
 	}
 	TestStringPrep(#$0020, [$20, $00]); //U+0020	SPACE
 	TestStringPrep(#$00A0, [$20, $00]); //U+00A0	NO-BREAK SPACE
@@ -738,36 +755,37 @@ begin
 	t(n, 63, Int64($DF9B5712CE8A4603));
 end;
 
-procedure TArgon2Tests.UnicodeCompatibleComposition;
+procedure TArgon2Tests.UnicodeNormalizationComposition;
 var
 	password: UnicodeString;
 begin
 	{
-		Check that we use unicode compatible composition (NFKC) on passwords.
-		See NIST SP 800-63B.
+		NIST SP 800-63B specified the use of NFKC.
+		RFC4013 (February 2005) specifies the use of NFKC. Obsoleted by RFC7613
+		RFC7613 (August 2015) specifically rescinded the earlier use of NFKC in favor of NFC - because of reasons. Obsoleted by RFC8265.
+		RFC8265 (October 2017) specifically reminds us that we're not to use NFKC, and should use NFC.
+
+		Check that we use unicode compatible composition (NFC) on passwords.
 
 		Before: A + ¨ + fi + n
 				A:  U+0041
-				¨:  U+0308 Combining Diaeresis
-				fi: U+FB01 Latin Small Ligature Fi
+				¨:  U+0308  Combining Diaeresis
+				fi: U+FB01  Latin Small Ligature Fi
 				n:  U+006E
 
-		Normalized:  Ä + f + i + n
+		Normalized C:  Ä + fi + n
 				Ä:  U+00C4  Latin Capital Letter A with Diaeresis
-				f:  U+0066
-				i:  U+0069
+				fi: U+FB01  Latin Small Ligature Fi
 				n:  U+006E
 
 		Final UTF-8:
 				Ä:  0xC3 0x84
-				f:  0x66
-				i:  0x69
+				fi: 0xEF 0xAC 0x81
 				n:  0x6E
-				\0: 0x00
 	}
 	password := 'A' + #$0308 + #$FB01 + 'n';
 
-	TestStringPrep(password, [$C3, $84, $66, $69, $6E, $00]);
+	TestStringPrep(password, [$C3, $84, $EF, $AC, $81, $6E, 0]);
 end;
 
 function TArgon2Tests.GetBlake2bUnkeyedTestVector(Index: Integer): string;
@@ -1219,9 +1237,6 @@ var
 	data: TBytes;
 begin
 	data := TArgon2Friend.PasswordStringPrep(s);
-
-	if Length(data) <> Length(Expected) then
-		Exit;
 
 	CheckEqualsBytes(Expected, data, s);
 end;
