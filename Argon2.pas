@@ -59,12 +59,16 @@ type
 		FSalt: TBytes;
 		FKnownSecret: TBytes;
 		FAssociatedData: TBytes;
+		class function StringToUtf8(Source: UnicodeString): TBytes;
+		class function PasswordStringPrep(Source: UnicodeString): UnicodeString;
 	protected
 		FHashType: Cardinal; //0=Argon2d, 1=Argon2i, 2=Argon2id
 		function GenerateSeedBlock(const Passphrase; PassphraseLength, DesiredNumberOfBytes: Integer): TBytes;
 		function GenerateInitialBlock(const H0: TBytes; ColumnIndex, LaneIndex: Integer): TBytes;
 		class procedure BurnBytes(var data: TBytes);
-		class function PasswordStringPrep(Source: UnicodeString): TBytes;
+		class procedure BurnString(var s: UnicodeString);
+
+		class function PasswordToBytes(Source: UnicodeString): TBytes;
 
 		class function Base64Encode(const data: array of Byte): string;
 		class function Base64Decode(const s: string): TBytes;
@@ -431,6 +435,16 @@ begin
 	SetLength(data, 0);
 end;
 
+class procedure TArgon2.BurnString(var s: UnicodeString);
+begin
+	if Length(s) > 0 then
+	begin
+		UniqueString({var}s); //We can't FillChar the string if it's shared, or its in the constant data page
+		FillChar(s[1], Length(s), 0);
+		s := '';
+	end;
+end;
+
 const
 	//The Blake2 IV comes from the SHA2-512 IV.
 	//The values are the the fractional part of the square root of the first 8 primes (2, 3, 5, 7, 11, 13, 17, 19)
@@ -462,6 +476,7 @@ class function TArgon2.CheckPassword(const Password: UnicodeString; const Expect
 var
 	ar: TArgon2;
 	algorithm: string;
+	passwordUtf8: TBytes;
 	version, iterations, memorySizeKB, parallelism: Integer;
 	salt, expected, actual: TBytes;
 	t1, t2, freq: Int64;
@@ -475,8 +490,9 @@ begin
 		if not ar.TryParseHashString(ExpectedHashString, {out}algorithm, {out}version, {out}iterations, {out}memorySizeKB, {out}parallelism, {out}salt, {out}expected) then
 			raise EArgon2Exception.Create('Could not parse password hash string');
 		try
+			passwordUtf8 := TArgon2.PasswordToBytes(Password);
 			QueryPerformanceCounter(t1);
-			actual := TArgon2.DeriveBytes(Password, Length(Password)*SizeOf(WideChar), salt, iterations, memorySizeKB, parallelism, 32);
+			actual := TArgon2.DeriveBytes(passwordUtf8, Length(Password)*SizeOf(WideChar), salt, iterations, memorySizeKB, parallelism, 32);
 			QueryPerformanceCounter(t2);
 
 			if Length(actual) <> Length(expected) then
@@ -499,6 +515,7 @@ begin
 		finally
 			ar.BurnBytes(actual);
 			ar.BurnBytes(expected);
+			ar.BurnBytes({var}passwordUtf8);
 		end;
 	finally
 		ar.Free;
@@ -846,7 +863,7 @@ begin
 	try
 		salt := ar.GenerateSalt;
 
-		utf8Password := TArgon2.PasswordStringPrep(Password); //use proper normalization of spaces,
+		utf8Password := TArgon2.PasswordToBytes(Password); //use proper normalization Form C, convert all spaces, utf8 encoding
 		try
 			derivedBytes := TArgon2.DeriveBytes(utf8Password, Length(Password)*SizeOf(WideChar), salt, Iterations, MemorySizeKB, Parallelism, 32);
 		finally
@@ -869,11 +886,10 @@ begin
 	end;
 end;
 
-class function TArgon2.PasswordStringPrep(Source: UnicodeString): TBytes;
+class function TArgon2.PasswordStringPrep(Source: UnicodeString): UnicodeString;
 var
-	normalizedLength: Integer;
-	normalized: UnicodeString;
 	strLen: Integer;
+	normalized: UnicodeString;
 	dw: DWORD;
 	i: Integer;
 const
@@ -881,11 +897,9 @@ const
 	SLenError = '[PasswordStringPrep] Could not get length of destination string. Error %d (%s)';
 	SConvertStringError = '[PasswordStringPrep] Could not convert utf16 to utf8 string. Error %d (%s)';
 begin
+	Result := '';
 	if Length(Source) = 0 then
-	begin
-		SetLength(Result, 0);
 		Exit;
-	end;
 
 	{
 		NIST Special Publication 800-63-3B (Digital Authentication Guideline - Authentication and Lifecycle Management)
@@ -896,7 +910,7 @@ begin
 			- C (Composition):                 adds character+diacritic into single code point (if possible)
 			- D (Decomposition):               separates an accented character into the letter and the diacritic
 
-		SASLprep (rfc4013) says to use NFKC:
+		SASLprep (RFC4013) agrees, saying to use NFKC:
 
 			2.2.  Normalization
 
@@ -928,7 +942,7 @@ begin
 
 				RFC7613 - Preparation, Enforcement, and Comparison of Internationalized Strings Representing Usernames and Passwords
 
-		reverses earlier RFC, and specifies NFC:
+		and reverses earlier RFC, and specifies NFC:
 
 			4.2.2.  Enforcement
 
@@ -979,7 +993,7 @@ begin
 
 		This loss of data when using KC is evident in RFC7613's requirement:
 
-				... halfwidth characters MUST NOT be mapped to their decomposition mappings...
+				...halfwidth characters MUST NOT be mapped to their decomposition mappings...
 
 		Using Form NFKC causes the half-width character
 
@@ -1037,59 +1051,76 @@ begin
 
 	//We use concrete variable for length, because i've seen it return asking for 64 bytes for a 6 byte string
 //	normalizedLength := NormalizeString(5, PWideChar(Source), Length(Source), nil, 0);
-	normalizedLength := FoldString(MAP_PRECOMPOSED, PWideChar(Source), Length(Source), nil, 0);
-	if normalizedLength = 0 then
+	strLen := FoldString(MAP_PRECOMPOSED, PWideChar(Source), Length(Source), nil, 0);
+	if strLen = 0 then
 	begin
 		dw := GetLastError;
 		raise EConvertError.CreateFmt(SLenError, [dw, SysErrorMessage(dw)]);
 	end;
 
 	// Allocate memory for destination string
-	SetLength(normalized, normalizedLength);
+	SetLength(Result, strLen);
 
 	// Now do it for real
+//	normalizedLength := NormalizeString(5, PWideChar(Source), Length(Source), PWideChar(normalized), Length(normalized));
+	strLen := FoldString(MAP_PRECOMPOSED, PWideChar(Source), Length(Source), PWideChar(Result), Length(Result));
+	if strLen = 0 then
+	begin
+		dw := GetLastError;
+		raise EConvertError.CreateFmt(SLenError, [dw, SysErrorMessage(dw)]);
+	end;
+end;
+
+class function TArgon2.PasswordToBytes(Source: UnicodeString): TBytes;
+var
+	prepared: UnicodeString;
+begin
+	prepared := TArgon2.PasswordStringPrep(Source);
 	try
-//		normalizedLength := NormalizeString(5, PWideChar(Source), Length(Source), PWideChar(normalized), Length(normalized));
-		normalizedLength := FoldString(MAP_PRECOMPOSED, PWideChar(Source), Length(Source), PWideChar(normalized), Length(normalized));
-		if normalizedLength = 0 then
-		begin
-			dw := GetLastError;
-			raise EConvertError.CreateFmt(SLenError, [dw, SysErrorMessage(dw)]);
-		end;
-
-		{
-			Now perform the conversion of UTF-16 to UTF-8
-		}
-		// Determine real size of destination string, in bytes
-		strLen := WideCharToMultiByte(CodePage, 0,
-				PWideChar(normalized), normalizedLength, //Source
-				nil, 0, //Destination
-				nil, nil);
-		if strLen = 0 then
-		begin
-			dw := GetLastError;
-			raise EConvertError.CreateFmt(SLenError, [dw, SysErrorMessage(dw)]);
-		end;
-
-		// Allocate memory for destination string
-		SetLength(Result, strLen+1); //+1 for the null terminator
-
-		// Convert source UTF-16 string (WideString) to the destination using the code-page
-		strLen := WideCharToMultiByte(CodePage, 0,
-				PWideChar(normalized), normalizedLength, //Source
-				PAnsiChar(Result), strLen, //Destination
-				nil, nil);
-		if strLen = 0 then
-		begin
-			dw := GetLastError;
-			raise EConvertError.CreateFmt(SConvertStringError, [dw, SysErrorMessage(dw)]);
-		end;
-
-		//Set the null terminator
-		Result[strLen] := 0;
+		Result := TArgon2.StringToUtf8(prepared);
 	finally
-		//Burn the intermediate normalized form
-		BurnString(normalized);
+		TArgon2.BurnString({var}prepared);
+	end;
+end;
+
+class function TArgon2.StringToUtf8(Source: UnicodeString): TBytes;
+var
+	strLen: Integer;
+	dw: DWORD;
+	i: Integer;
+const
+	CodePage = CP_UTF8;
+	SLenError = '[StringToUtf8] Could not get length of destination string. Error %d (%s)';
+	SConvertStringError = '[StringToUtf8] Could not convert utf16 to utf8 string. Error %d (%s)';
+begin
+	SetLength(Result, 0);
+
+	if Length(Source) = 0 then
+		Exit;
+
+	// Determine real size of destination string, in bytes
+	strLen := WideCharToMultiByte(CP_UTF8, 0,
+			PWideChar(Source), Length(Source), //Source
+			nil, 0, //Destination
+			nil, nil);
+	if strLen = 0 then
+	begin
+		dw := GetLastError;
+		raise EConvertError.CreateFmt(SLenError, [dw, SysErrorMessage(dw)]);
+	end;
+
+	// Allocate memory for destination string
+	SetLength(Result, strLen);
+
+	// Convert source UTF-16 string (WideString) to the destination using the code-page
+	strLen := WideCharToMultiByte(CodePage, 0,
+			PWideChar(Source), Length(Source), //Source
+			PAnsiChar(Result), strLen, //Destination
+			nil, nil);
+	if strLen = 0 then
+	begin
+		dw := GetLastError;
+		raise EConvertError.CreateFmt(SConvertStringError, [dw, SysErrorMessage(dw)]);
 	end;
 end;
 

@@ -119,8 +119,8 @@ begin
 				i:  U+0069
 				n:  U+006E
 	}
-	password1 := 'A' + #$0308 + #$FB01 + 'n';
-	password2 := #$00C4 + 'f' + 'i' + 'n';
+	password1 := 'A' + #$0308 + #$FB01 + 'n'; //uncomposed form
+	password2 := #$00C4 + 'f' + 'i' + 'n';    //composed form
 
 	hash := TArgon2.HashPassword(password1, 1, 16, 1);
 	bRes := TArgon2.CheckPassword(password2, hash, {out}passwordRehashNeeded);
@@ -161,7 +161,7 @@ begin
 			U+FF54  FULLWIDTH LATIN SMALL   LETTER t   UTF8 0xEF 0xBD 0x94
 	}
 	pass := #$ff34 + #$ff45 + #$ff53 + #$ff54;
-	TestStringPrep(pass, [$ef, $bc, $b4, $ef, $bd, $85, $ef, $bd, $93, $ef, $bd, $94, 0]);
+	TestStringPrep(pass, [$ef, $bc, $b4, $ef, $bd, $85, $ef, $bd, $93, $ef, $bd, $94]);
 
 	{
 		Halfwidth
@@ -174,12 +174,10 @@ begin
 			U+1162  HANGUL JUNGSEONG AE                UTF8 0xE1 0x85 0xA2
 	}
 	pass := #$ffc3;
-	TestStringPrep(pass, [$ef, $bf, $83, 0]);
+	TestStringPrep(pass, [$ef, $bf, $83]);
 end;
 
 procedure TArgon2Tests.PasswordPrep_Spaces;
-var
-	pass: UnicodeString;
 begin
 	{
 		SASLprep rules for passwords
@@ -200,23 +198,23 @@ begin
 
 		4.  Normalization Rule: Unicode Normalization Form C (NFC) MUST be applied to all characters.
 	}
-	TestStringPrep(#$0020, [$20, $00]); //U+0020	SPACE
-	TestStringPrep(#$00A0, [$20, $00]); //U+00A0	NO-BREAK SPACE
-	TestStringPrep(#$1680, [$20, $00]); //U+1680	OGHAM SPACE MARK
-	TestStringPrep(#$2000, [$20, $00]); //U+2000	EN QUAD
-	TestStringPrep(#$2001, [$20, $00]); //U+2001	EM QUAD
-	TestStringPrep(#$2002, [$20, $00]); //U+2002	EN SPACE
-	TestStringPrep(#$2003, [$20, $00]); //U+2003	EM SPACE
-	TestStringPrep(#$2004, [$20, $00]); //U+2004	THREE-PER-EM SPACE
-	TestStringPrep(#$2005, [$20, $00]); //U+2005	FOUR-PER-EM SPACE
-	TestStringPrep(#$2006, [$20, $00]); //U+2006	SIX-PER-EM SPACE
-	TestStringPrep(#$2007, [$20, $00]); //U+2007	FIGURE SPACE
-	TestStringPrep(#$2008, [$20, $00]); //U+2008	PUNCTUATION SPACE
-	TestStringPrep(#$2009, [$20, $00]); //U+2009	THIN SPACE
-	TestStringPrep(#$200A, [$20, $00]); //U+200A	HAIR SPACE
-	TestStringPrep(#$202F, [$20, $00]); //U+202F	NARROW NO-BREAK SPACE
-	TestStringPrep(#$205F, [$20, $00]); //U+205F	MEDIUM MATHEMATICAL SPACE
-	TestStringPrep(#$3000, [$20, $00]); //U+3000	IDEOGRAPHIC SPACE
+	TestStringPrep(#$0020, [$20]); //U+0020	SPACE
+	TestStringPrep(#$00A0, [$20]); //U+00A0	NO-BREAK SPACE
+	TestStringPrep(#$1680, [$20]); //U+1680	OGHAM SPACE MARK
+	TestStringPrep(#$2000, [$20]); //U+2000	EN QUAD
+	TestStringPrep(#$2001, [$20]); //U+2001	EM QUAD
+	TestStringPrep(#$2002, [$20]); //U+2002	EN SPACE
+	TestStringPrep(#$2003, [$20]); //U+2003	EM SPACE
+	TestStringPrep(#$2004, [$20]); //U+2004	THREE-PER-EM SPACE
+	TestStringPrep(#$2005, [$20]); //U+2005	FOUR-PER-EM SPACE
+	TestStringPrep(#$2006, [$20]); //U+2006	SIX-PER-EM SPACE
+	TestStringPrep(#$2007, [$20]); //U+2007	FIGURE SPACE
+	TestStringPrep(#$2008, [$20]); //U+2008	PUNCTUATION SPACE
+	TestStringPrep(#$2009, [$20]); //U+2009	THIN SPACE
+	TestStringPrep(#$200A, [$20]); //U+200A	HAIR SPACE
+	TestStringPrep(#$202F, [$20]); //U+202F	NARROW NO-BREAK SPACE
+	TestStringPrep(#$205F, [$20]); //U+205F	MEDIUM MATHEMATICAL SPACE
+	TestStringPrep(#$3000, [$20]); //U+3000	IDEOGRAPHIC SPACE
 end;
 
 function TArgon2Tests.Blake2b(const Data; DataLen, DesiredBytes: Integer; const Key; KeyLen: Integer): TBytes;
@@ -393,6 +391,10 @@ var
 	ar: TArgon2;
 	expected, actual: TBytes;
 begin
+	{
+		Argon2d test vector
+		https://tools.ietf.org/id/draft-irtf-cfrg-argon2-03.html#rfc.section.6.1
+	}
 	password := TBytes.Create(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1); //32 bytes of 1
 
 	//Argon2i
@@ -404,6 +406,7 @@ begin
 		ar.Salt := TBytes.Create(2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2); //16 bytes of 2
 		ar.KnownSecret := TBytes.Create(3, 3, 3, 3, 3, 3, 3, 3); //8 bytes of 3
 		ar.AssociatedData := TBytes.Create(4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4); //12 bytes of 4
+
 		actual := ar.GetBytes(password[0], Length(password), 32);
 	finally
 		ar.Free;
@@ -785,7 +788,7 @@ begin
 	}
 	password := 'A' + #$0308 + #$FB01 + 'n';
 
-	TestStringPrep(password, [$C3, $84, $EF, $AC, $81, $6E, 0]);
+	TestStringPrep(password, [$C3, $84, $EF, $AC, $81, $6E]);
 end;
 
 function TArgon2Tests.GetBlake2bUnkeyedTestVector(Index: Integer): string;
@@ -1234,11 +1237,11 @@ end;
 
 procedure TArgon2Tests.TestStringPrep(const s: UnicodeString; Expected: array of Byte);
 var
-	data: TBytes;
+	actual: TBytes;
 begin
-	data := TArgon2Friend.PasswordStringPrep(s);
+	actual := TArgon2Friend.PasswordToBytes(s);
 
-	CheckEqualsBytes(Expected, data, s);
+	CheckEqualsBytes(Expected, actual, s);
 end;
 
 function TArgon2Tests.GetBlake2bKeyedTestVector(Index: Integer): string;
@@ -1575,6 +1578,12 @@ var
 	hasher: IHashAlgorithm;
 	split1, split2: Integer;
 begin
+	if not FindCmdLineSwitch('IncludeSlowTests', ['-','/'], True) then
+	begin
+		Status('Skipping slow test. Use -IncludeSlowTests');
+		Exit;
+	end;
+
 	{
 		https://github.com/BLAKE2/BLAKE2/blob/master/csharp/Blake2Sharp.Tests/SequentialTests.cs
 
