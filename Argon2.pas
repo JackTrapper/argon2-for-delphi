@@ -52,7 +52,6 @@ const
 type
 	TArgon2 = class(TObject)
 	private
-		FPassword: TBytes;
 		FMemorySizeKB: Integer;
 		FDegreeOfParallelism: Integer;
 		FIterations: Integer;
@@ -61,10 +60,15 @@ type
 		FAssociatedData: TBytes;
 		class function StringToUtf8(Source: UnicodeString): TBytes;
 		class function PasswordStringPrep(Source: UnicodeString): UnicodeString;
+		procedure Burn;
 	protected
 		FHashType: Cardinal; //0=Argon2d, 1=Argon2i, 2=Argon2id
+
 		function GenerateSeedBlock(const Passphrase; PassphraseLength, DesiredNumberOfBytes: Integer): TBytes;
 		function GenerateInitialBlock(const H0: TBytes; ColumnIndex, LaneIndex: Integer): TBytes;
+		function GenerateSalt: TBytes;
+
+		//Utility functions
 		class procedure BurnBytes(var data: TBytes);
 		class procedure BurnString(var s: UnicodeString);
 
@@ -75,12 +79,13 @@ type
 
 		class function Tokenize(const s: string; Delimiter: Char): TStringDynArray;
 		class function GenRandomBytes(len: Integer; const data: Pointer): HRESULT;
-		function GenerateSalt: TBytes;
 		class function Hash(const Buffer; BufferLen: Integer; DigestSize: Cardinal): TBytes;
-
 		class function UnicodeStringToUtf8(const Source: UnicodeString): TBytes;
-
 		class function TimingSafeSameString(const Safe, User: string): Boolean;
+
+		//The main Argon2 alorithm
+		function DeriveBytes(const Passphrase; PassphraseLength: Integer; DesiredNumberOfBytes: Integer): TBytes;
+		procedure GetBlockIndexes(i, j: Integer; out iRef, jRef: Integer); virtual; //implementation depends if you're using 2i, 2d, or 2id
 
 		procedure GetDefaultParameters(out Iterations, MemoryFactor, Parallelism: Integer);
 		function TryParseHashString(HashString: string; out Algorithm: string; out Version, Iterations, MemoryFactor, Parallelism: Integer; out Salt: TBytes; out Data: TBytes): Boolean;
@@ -89,8 +94,18 @@ type
 		class function CreateHash(AlgorithmName: string; cbHashLen: Integer; const Key; const cbKeyLen: Integer): IUnknown;
 	public
 		constructor Create;
+		destructor Destroy; override;
 
-		function GetBytes(const Passphrase; PassphraseLength: Integer; DesiredNumberOfBytes: Integer): TBytes;
+		//Get a number of bytes using the default Cost, Parallelization, and Memory factors
+		class function GetBytes(const Passphrase; PassphraseLength: Integer; DesiredNumberOfBytes: Integer): TBytes; overload;
+
+		//Get a number of bytes, specifying the desired cost, parallelization, and memory factor
+		class function GetBytes(const Passphrase; PassphraseLength: Integer; const Salt: TBytes; Iterations, MemorySizeKB, Parallelism: Integer; DesiredNumberOfBytes: Integer): TBytes; overload;
+
+		//Hashes a password into the standard Argon2 OpenBSD password-file format
+		class function HashPassword(const Password: UnicodeString): string; overload;
+		class function HashPassword(const Password: UnicodeString; const Iterations, MemorySizeKB, Parallelism: Integer): string; overload;
+		class function CheckPassword(const Password: UnicodeString; const ExpectedHashString: string; out PasswordRehashNeeded: Boolean): Boolean; overload;
 
 		property Iterations: Integer read FIterations write FIterations; //must be at least 1 iteration
 		property MemorySizeKB: Integer read FMemorySizeKB write FMemorySizeKB; //must be at least 4 KB
@@ -99,28 +114,39 @@ type
 		property KnownSecret: TBytes read FKnownSecret write FKnownSecret;
 		property AssociatedData: TBytes read FAssociatedData write FAssociatedData;
 
-		class function DeriveBytes(const Passphrase; PassphraseLength: Integer; const Salt: TBytes; Iterations, MemorySizeKB, Parallelism: Integer; nDesiredBytes: Integer): TBytes;
-
-		//Hashes a password into the standard Argon2 OpenBSD password-file format
-		class function HashPassword(const Password: UnicodeString): string; overload;
-		class function HashPassword(const Password: UnicodeString; const Iterations, MemorySizeKB, Parallelism: Integer): string; overload;
-		class function CheckPassword(const Password: UnicodeString; const ExpectedHashString: string; out PasswordRehashNeeded: Boolean): Boolean; overload;
-
 		class function CreateObject(ObjectName: string): IUnknown;
 	end;
 
+	{
+		Argon2id variant is the current recommended variant.
+		It was created after the original 2i and 2d variants, and combines the speed and security of both.
+	}
+	TArgon2id = TArgon2; //The base Argon2 *is* Argon2id. We just want people to fall into a pit of success.
+
+	{
+		Argon2i variant is resistant to side-channel attacks (i.e. mixing in Independant of the passphrase),
+		but is weaker than 2i.
+		Recommended to use Argon2id instead.
+	}
 	TArgon2i = class(TArgon2)
+	protected
+		procedure GetBlockIndexes(i, j: Integer; out iRef, jRef: Integer); override; //implementation depends if you're using 2i, 2d, or 2id
 	public
-
+		constructor Create;
 	end;
 
+	{
+		Argon2d variant is vulnerable to side-channel attacks (i.e. mixing is Dependant on the passphrase),
+		but it is stronger. It can be used for cryptocurrency, but not for passphrases.
+		Recommended to use Argon2id instead.
+	}
 	TArgon2d = class(TArgon2)
+	protected
+		procedure GetBlockIndexes(i, j: Integer; out iRef, jRef: Integer); override; //implementation depends if you're using 2i, 2d, or 2id
 	public
+		constructor Create;
 	end;
 
-	TArgon2id = class(TArgon2)
-	public
-	end;
 
 	//As basic of a Hash interface as you can get
 	IHashAlgorithm = interface(IInterface)
@@ -426,6 +452,27 @@ begin
 	Result := Result+EncodePacket(b1, b2, 0, len);
 end;
 
+procedure TArgon2.Burn;
+begin
+	{
+		Destructor itself will perform a Burn.
+		But for the paranoid, or object reuse, we expose it.
+
+		Intentional design decision was that Password is never stored; only passed into the functions that need it.
+		But we do have advanced users who have Salt, Associated Data, and Known Secret.
+
+		And while Salt doesn't need to be kept secret for security purposes, Known Secret does.
+	}
+	FMemorySizeKB        := 128*1024; //128 MB
+	FHashType            := 2; //0=Argon2d, 1=Argon2i, 2=Argon2id
+	FDegreeOfParallelism := 1; //1 thread
+	FIterations          := 1000; //1000 iterations
+
+	TArgon2.BurnBytes(FSalt);
+	TArgon2.BurnBytes(FAssociatedData);
+	TArgon2.BurnBytes(FKnownSecret);
+end;
+
 class procedure TArgon2.BurnBytes(var data: TBytes);
 begin
 	if Length(data) <= 0 then
@@ -492,7 +539,7 @@ begin
 		try
 			passwordUtf8 := TArgon2.PasswordToBytes(Password);
 			QueryPerformanceCounter(t1);
-			actual := TArgon2.DeriveBytes(passwordUtf8, Length(Password)*SizeOf(WideChar), salt, iterations, memorySizeKB, parallelism, 32);
+			actual := TArgon2.GetBytes(passwordUtf8, Length(Password)*SizeOf(WideChar), salt, iterations, memorySizeKB, parallelism, 32);
 			QueryPerformanceCounter(t2);
 
 			if Length(actual) <> Length(expected) then
@@ -526,9 +573,8 @@ constructor TArgon2.Create;
 begin
 	inherited Create;
 
-	SetLength(FPassword, 0);
 	FMemorySizeKB := 128*1024; //128 MB
-	FHashType := 1; //0=Argon2d, 1=Argon2i, 2=Argon2id
+	FHashType := 2; //0=Argon2d, 1=Argon2i, 2=Argon2id
 	FDegreeOfParallelism := 1; //1 thread
 	FIterations := 1000; //1000 iterations
 	SetLength(FSalt, 0); //we can't generate salt for them; they need to know what it was
@@ -560,7 +606,19 @@ begin
 		raise EArgon2Exception.CreateFmt('Unknown object name "%s"', [ObjectName]);
 end;
 
-class function TArgon2.DeriveBytes(const Passphrase; PassphraseLength: Integer; const Salt: TBytes; Iterations, MemorySizeKB, Parallelism: Integer; nDesiredBytes: Integer): TBytes;
+procedure TArgon2.GetBlockIndexes(i, j: Integer; out iRef, jRef: Integer);
+begin
+	{
+		We are Argon2id.
+	}
+	//Since i cannot make heads nor tails of either their PDF, their RFC, their GitHub, nor their sample code, this is a todo
+	iRef := 0;
+	jRef := 0;
+
+	raise ENotImplemented.Create('Someone needs to figure out the 2id block schedule alorithm');
+end;
+
+class function TArgon2.GetBytes(const Passphrase; PassphraseLength: Integer; const Salt: TBytes; Iterations, MemorySizeKB, Parallelism: Integer; DesiredNumberOfBytes: Integer): TBytes;
 var
 	ar: TArgon2;
 begin
@@ -586,7 +644,7 @@ begin
 		ar.DegreeOfParallelism := Parallelism;
 		ar.Salt := Salt;
 
-		Result := ar.GetBytes(Passphrase, PassphraseLength, nDesiredBytes);
+		Result := ar.DeriveBytes(Passphrase, PassphraseLength, DesiredNumberOfBytes);
 	finally
 		ar.Free;
 	end;
@@ -676,16 +734,17 @@ type
 		BlockCount: Integer;
 	end;
 
-function TArgon2.GetBytes(const Passphrase; PassphraseLength: Integer; DesiredNumberOfBytes: Integer): TBytes;
+function TArgon2.DeriveBytes(const Passphrase; PassphraseLength: Integer; DesiredNumberOfBytes: Integer): TBytes;
 var
 	lanes: array of TArray<UInt64>;
 	i, j: Integer;
-//	iref, jref: Integer;
+	iref, jref: Integer;
 	digest: TBytes;
 	h0: TBytes;
 	columnCount: Integer;
 	bFinal: TBytes;
 	lastColumnIndex: Integer;
+	nIteration: Integer;
 const
 	SDesiredBytesMaxError = 'Argon2 only supports generating a maximum of 1,024 bytes (Requested %d bytes)';
 	SInvalidIterations = 'Argon2 hash requires at least 1 iteration (Requested %d)';
@@ -707,7 +766,6 @@ begin
 
 	//Calculate number of 1 KiB blocks by rounding down memorySizeKB to the nearest multiple of 4*DegreeOfParallelism kilobytes
 	columnCount := memorySizeKB div 4 div FDegreeOfParallelism;
-	//blockCount := columnCount * FDegreeOfParallelism;
 
 	//Allocate two-dimensional array of 1 KiB blocks (parallelism rows x columnCount columns)
 	SetLength(lanes, FDegreeOfParallelism);
@@ -732,12 +790,31 @@ begin
 		for j := 2 to columnCount-1 do //for each subsequent column
 		begin
 			//iref and jref indexes depend if it's Argon2i, Argon2d, or Argon2id (See section 3.4)
-			//GetBlockIndexes(i, j, {out}iref, {out}jref);
-			//Bi[j] = G(Bi[j-1], Biref[jref])
+			Self.GetBlockIndexes(i, j, {out}iref, {out}jref);
+
+			//TODO: They don't document what the function G is
+			//B[i][j] = G(B[i][j-1], B[iref][jref])
 		end;
 	end;
 
-	//The final block is the xor of the last column of each lane
+	//Further passes when iterations > 1
+	for nIteration := 2 to Iterations do
+	begin
+		for i := 1 to FDegreeOfParallelism-1 do //for each row
+		begin
+			for j := 2 to columnCount-1 do //for each subsequent column
+			begin
+				//iref and jref indexes depend if it's Argon2i, Argon2d, or Argon2id (See section 3.4)
+				Self.GetBlockIndexes(i, j, {out}iref, {out}jref);
+
+				//TODO: They don't document what the function G is
+				//B[i][0] = G(B[i][columnCount-1], B[iref][jref])
+				//B[i][j] = G(B[i][j-1],           B[iref][jref])
+			end;
+		end;
+	end;
+
+	//The final block is the xor of the last column of each row
 	//bFinal := b[0][lastColumn] || b[1][lastColumn] || .. || b[FDegreeOfParallelism-1][lastColumn]
 	SetLength(bFinal, 1024);
 	lastColumnIndex := (columnCount-1)*BlockStride;
@@ -749,6 +826,13 @@ begin
 	end;
 
 	Result := Hash(bFinal[0], 1024, DesiredNumberOfBytes);
+end;
+
+destructor TArgon2.Destroy;
+begin
+	Self.Burn;
+
+	inherited;
 end;
 
 function TArgon2.GenerateInitialBlock(const H0: TBytes; ColumnIndex, LaneIndex: Integer): TBytes;
@@ -802,6 +886,33 @@ begin
 end;
 
 
+class function TArgon2.GetBytes(const Passphrase; PassphraseLength, DesiredNumberOfBytes: Integer): TBytes;
+var
+	ar: TArgon2;
+begin
+	{
+		Iterations (t): Number of iterations
+				Used to determine the running time independantly of the memory size
+				1 - 0x7FFFFFFF
+		Parallelism (p): Degree of Parallelism
+				Determines how many independant (but synchronizing) computational chains can be run.
+				1 - 0x00FFFFFF
+		MemorySizeKB (m): number of kilobyes
+				8p - 0x7FFFFFFF
+
+		Secret value (K): Serves as a key if necessary
+				0 - 32 bytes
+	}
+
+	//Unhelpfully, Argon2 doesn't
+	ar := TArgon2.Create();
+	try
+		Result := ar.DeriveBytes(Passphrase, PassphraseLength, DesiredNumberOfBytes);
+	finally
+		ar.Free;
+	end;
+end;
+
 procedure TArgon2.GetDefaultParameters(out Iterations, MemoryFactor, Parallelism: Integer);
 begin
 
@@ -824,7 +935,7 @@ var
 	digest: TBytes;
 begin
 	{
-		This is a variable length hash function, that can generate digests up to 2^32 bytes
+		This is a variable length hash function, that can generate digests up to 2^32 bytes.
 	}
 	if DigestSize <= 64 then
 	begin
@@ -876,7 +987,7 @@ begin
 
 		utf8Password := TArgon2.PasswordToBytes(Password); //use proper normalization Form C, convert all spaces, utf8 encoding
 		try
-			derivedBytes := TArgon2.DeriveBytes(utf8Password, Length(Password)*SizeOf(WideChar), salt, Iterations, MemorySizeKB, Parallelism, 32);
+			derivedBytes := TArgon2.GetBytes(utf8Password, Length(Password)*SizeOf(WideChar), salt, Iterations, MemorySizeKB, Parallelism, 32);
 		finally
 			TArgon2.BurnBytes({var}utf8Password);
 		end;
@@ -900,7 +1011,7 @@ end;
 class function TArgon2.PasswordStringPrep(Source: UnicodeString): UnicodeString;
 var
 	strLen: Integer;
-	normalized: UnicodeString;
+//	normalized: UnicodeString;
 	dw: DWORD;
 	i: Integer;
 const
@@ -916,21 +1027,25 @@ begin
 		NIST Special Publication 800-63-3B (Digital Authentication Guideline - Authentication and Lifecycle Management)
 		https://pages.nist.gov/800-63-3/sp800-63b.html
 
-		Reminds us to normalize the string (using either NFKC or NFKD).
+		reminds us to normalize the string (using either NFKC or NFKD).
 			- K (Compatibility normalization): decomposes ligatures into base compatibilty characters
 			- C (Composition):                 adds character+diacritic into single code point (if possible)
 			- D (Decomposition):               separates an accented character into the letter and the diacritic
 
+		Composition means combining diacritics into base characters
+
+			Before: Noe¨l
+			After:  Noël
+
+
 		SASLprep (RFC4013) agrees, saying to use NFKC:
 
 			2.2.  Normalization
-
 				This profile specifies using Unicode normalization form KC, as described in Section 4 of [StringPrep].
 
-		StringPrep (rfc3454, Preparation of Internationalized Strings ("stringprep")) both specified NFKC:
+		StringPrep (rfc3454, Preparation of Internationalized Strings ("stringprep")) both also specify NFKC:
 
 			4. Normalization
-
 				The output of the mapping step is optionally normalized using one of
 				the Unicode normalization forms, as described in [UAX15].  A profile
 				can specify one of two options for Unicode normalization:
@@ -940,12 +1055,6 @@ begin
 				- Unicode normalization with form KC
 
 
-		Composition means combining diacritics into base characters
-
-			Before: Noe¨l
-			After:  Noël
-
-
 		But
 				RFC4013 - SASLprep: Stringprep Profile for User Names and Passwords (NFKC)
 
@@ -953,7 +1062,7 @@ begin
 
 				RFC7613 - Preparation, Enforcement, and Comparison of Internationalized Strings Representing Usernames and Passwords
 
-		and reverses earlier RFC, and specifies NFC:
+		and reverses earlier RFC, and specifies NFC (composition, and MUST NOT use decomposition. And not "compatibility" composition)
 
 			4.2.2.  Enforcement
 
@@ -1098,7 +1207,6 @@ class function TArgon2.StringToUtf8(Source: UnicodeString): TBytes;
 var
 	strLen: Integer;
 	dw: DWORD;
-	i: Integer;
 const
 	CodePage = CP_UTF8;
 	SLenError = '[StringToUtf8] Could not get length of destination string. Error %d (%s)';
@@ -2036,6 +2144,52 @@ end;
 procedure TArgon2HashPrime.HashData(const Buffer; BufferLen: Integer);
 begin
 	FBlake2.HashData(Buffer, BufferLen);
+end;
+
+{ TArgon2d }
+
+constructor TArgon2d.Create;
+begin
+	inherited Create;
+
+	//We are the 2d variant of Argon2
+	FHashType := 0; //0=Argon2d, 1=Argon2i, 2=Argon2id
+end;
+
+procedure TArgon2d.GetBlockIndexes(i, j: Integer; out iRef, jRef: Integer);
+begin
+	{
+		Argon22 uses an entirely different block indexing schedule from 2i and 2id.
+
+		But since i can't figure it out, this implementation is todo
+	}
+	iRef := 0;
+	jRef := 0;
+
+	raise ENotImplemented.Create('Someone needs to figure out the 2d block schedule alorithm');
+end;
+
+{ TArgon2i }
+
+constructor TArgon2i.Create;
+begin
+	inherited Create;
+
+	//We are the 2i variant of Argon2
+	FHashType := 1; //0=Argon2d, 1=Argon2i, 2=Argon2id
+end;
+
+procedure TArgon2i.GetBlockIndexes(i, j: Integer; out iRef, jRef: Integer);
+begin
+	{
+		Argon2i uses an entirely different block indexing schedule from 2d and 2id.
+
+		But since i can't figure it out, this implementation is todo
+	}
+	iRef := 0;
+	jRef := 0;
+
+	raise ENotImplemented.Create('Someone needs to figure out the 2i block schedule alorithm');
 end;
 
 end.
