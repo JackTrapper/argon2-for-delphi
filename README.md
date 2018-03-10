@@ -38,8 +38,14 @@ The parts of the string are:
 
 Because the four argon parameters are stored in the returned string, argon2 password hashes are backwards and forwards compatible with changing the factors. It also makes Argon2 extraordinarily convenient, in that a random salt is automatically generated and stored for you (you don't have to worry about storing it in a database or retrieving it).
 
-
 This code is licensed under public domain **Unlicense**. 
+
+Bonus Reading
+------------
+
+- RFC: [The memory-hard Argon2 password hash and proof-of-work function](https://tools.ietf.org/html/draft-irtf-cfrg-argon2-03) *(updated August 3, 2017)*
+- Whitepaper: [Argon2: the memory-hard function for password hashing and other
+applications](https://github.com/P-H-C/phc-winner-argon2/raw/master/argon2-specs.pdf) *(updated March 24, 2017)*
 
 -----------------
 
