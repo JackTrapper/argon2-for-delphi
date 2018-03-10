@@ -28,9 +28,7 @@ type
 		procedure HashAlgorithm_Blake2b_Splits;
 		procedure HashAlgorithm_Blake2b_SMHasher;
 
-		procedure Test_ParseHashString;
-		procedure Test_ParseHashString_OtherParameterOrders;
-		procedure Test_ParseHashString_VerisonOptional;
+		procedure Test_HashPrime;
 
 		procedure Test_ArgonSeedBlockH0;
 		procedure Test_ArgonInitialBlocks;
@@ -39,6 +37,10 @@ type
 		procedure PasswordPrep_HalfWidthFullWidth; //SASLprep rules for passwords
 		procedure PasswordPrep_Spaces; //convert all Z category spaces to U+0020
 		procedure NormalizedPasswordsMatch; //check that composed and decomposed strings both validate to the same
+
+		procedure Test_ParseHashString;
+		procedure Test_ParseHashString_OtherParameterOrders;
+		procedure Test_ParseHashString_VerisonOptional;
 
 		procedure Test_Argon2i;
 	end;
@@ -266,6 +268,12 @@ var
 			1000000000/speed]));
 	end;
 begin
+	if not FindCmdLineSwitch('IncludeSlowTests', ['-','/'], True) then
+	begin
+		Status('Skipping slow test. Use -IncludeSlowTests');
+		Exit;
+	end;
+
 	if not QueryPerformanceFrequency(freq) then
 		freq := -1;
 	Status(Format('%s		%s	%s', ['Algorithm', 'Speed (MB/s)',	'ns/byte']));
@@ -516,6 +524,11 @@ begin
 	CheckEqualsBytes(expected, actual);
 end;
 
+procedure TArgon2Tests.Test_HashPrime;
+begin
+
+end;
+
 procedure TArgon2Tests.Test_ParseHashString;
 
 	procedure t(HashString: string; ExpectedResult: Boolean; ExpectedAlgorithm: string;
@@ -654,7 +667,6 @@ begin
 
 	t('$argon2i$v=19$P=4,M=65536,T=2$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 19, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
 	t('$argon2i$v=19$P=4,T=2,M=65536$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG', True, 'argon2i', 19, 65536, 2, 4, '736F6D6573616c74', '45d7ac72e76f242b20b77b9bf9bf9d5915894e669a24e6c6');
-
 end;
 
 procedure TArgon2Tests.Test_ParseHashString_VerisonOptional;
@@ -765,7 +777,7 @@ begin
 	{
 		NIST SP 800-63B specified the use of NFKC.
 		RFC4013 (February 2005) specifies the use of NFKC. Obsoleted by RFC7613
-		RFC7613 (August 2015) specifically rescinded the earlier use of NFKC in favor of NFC - because of reasons. Obsoleted by RFC8265.
+		RFC7613 (August 2015) specifically rescinded the earlier use of NFKC in favor of NFC - because of reasons (e.g. data loss; as MS documented on MSDN). Obsoleted by RFC8265.
 		RFC8265 (October 2017) specifically reminds us that we're not to use NFKC, and should use NFC.
 
 		Check that we use unicode compatible composition (NFC) on passwords.

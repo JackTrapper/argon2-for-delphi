@@ -251,7 +251,7 @@ type
 		procedure BlakeCompress(const m: PBlake2bBlockArray; cbBytesProcessed: Int64; IsFinalBlock: Boolean); override;
 	end;
 
-	TArgon2Hash = class(TInterfacedObject, IHashAlgorithm)
+	TArgon2HashPrime = class(TInterfacedObject, IHashAlgorithm)
 	private
 		FDigestSize: Integer;
 		FBlake2: IHashAlgorithm;
@@ -684,6 +684,8 @@ var
 	digest: TBytes;
 	h0: TBytes;
 	columnCount: Integer;
+	bFinal: TBytes;
+	lastColumnIndex: Integer;
 const
 	SDesiredBytesMaxError = 'Argon2 only supports generating a maximum of 1,024 bytes (Requested %d bytes)';
 	SInvalidIterations = 'Argon2 hash requires at least 1 iteration (Requested %d)';
@@ -735,16 +737,25 @@ begin
 		end;
 	end;
 
-	SetLength(Result, DesiredNumberOfBytes);
-	FillChar(Result[0], DesiredNumberOfBytes, 0);
+	//The final block is the xor of the last column of each lane
+	//bFinal := b[0][lastColumn] || b[1][lastColumn] || .. || b[FDegreeOfParallelism-1][lastColumn]
+	SetLength(bFinal, 1024);
+	lastColumnIndex := (columnCount-1)*BlockStride;
+	Move(lanes[0][lastColumnIndex], bFinal[0], 1024);
+	for i := 1 to FDegreeOfParallelism-1 do //for each row
+	begin
+		for j := 0 to 1024-1 do
+			bFinal[j] := bFinal[j] xor lanes[i][lastColumnIndex+j];
+	end;
 
+	Result := Hash(bFinal[0], 1024, DesiredNumberOfBytes);
 end;
 
 function TArgon2.GenerateInitialBlock(const H0: TBytes; ColumnIndex, LaneIndex: Integer): TBytes;
 var
 	hash: IHashAlgorithm;
 begin
-	hash := TArgon2Hash.Create(1024);
+	hash := TArgon2HashPrime.Create(1024);
 
 	//block = Hash( h0 || columnIndex || LaneIndex, 1024);
 	hash.HashData(h0[0], Length(h0));
@@ -1936,7 +1947,7 @@ end;
 
 { TArgon2Hash }
 
-constructor TArgon2Hash.Create(DigestSize: Integer);
+constructor TArgon2HashPrime.Create(DigestSize: Integer);
 begin
 	inherited Create;
 
@@ -1946,7 +1957,7 @@ begin
 	FBlake2.HashData(DigestSize, 4);
 end;
 
-function TArgon2Hash.Finalize: TBytes;
+function TArgon2HashPrime.Finalize: TBytes;
 var
 	cbRemaining: Integer;
 	nIndex: Integer;
@@ -2012,17 +2023,17 @@ begin
 	Move(data[0], Result[nIndex], cbRemaining);
 end;
 
-function TArgon2Hash.GetBlockSize: Integer;
+function TArgon2HashPrime.GetBlockSize: Integer;
 begin
 	Result := 64;
 end;
 
-function TArgon2Hash.GetDigestSize: Integer;
+function TArgon2HashPrime.GetDigestSize: Integer;
 begin
 	Result := FDigestSize;
 end;
 
-procedure TArgon2Hash.HashData(const Buffer; BufferLen: Integer);
+procedure TArgon2HashPrime.HashData(const Buffer; BufferLen: Integer);
 begin
 	FBlake2.HashData(Buffer, BufferLen);
 end;
