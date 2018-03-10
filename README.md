@@ -1,3 +1,5 @@
+**Warning:** This implementation is incomplete. There are items in the Argon2 specification that are undocumented.
+
 # Argon2 for Delphi
 
 [Argon2](https://en.wikipedia.org/wiki/Argon2) is a key derivation function. It is designed to take a password (and some salt), and generate a desired number of pseudo-random bytes. Like *scrypt*, it is also *memory hard*, meaning it is designed thwart implementations on ASICs and GPUs. It was selected as the winner of Google's [Password Hashing Competition](https://password-hashing.net/) in 2015.
@@ -9,11 +11,11 @@ To hash a pssword using default cost factors:
 
         hash := TArgon2.HashPassword('correct battery horse staple'); //using default cost factors
     
-- To hash a password specifying your own cost factors:
+To hash a password specifying your own cost factors:
 
         hash := TArgon2.HashPassword('correct battery horse staple', 1000, 128*1024, 1); //Iterations=1000, Memory=128MB, Parallelism=1
     
-- To verify a password:
+To verify a password:
 
         isPasswordValid := TArgon2.CheckPassword('correct battery horse stapler', expectedHash, {out}passwordRehashNeeded);
 
