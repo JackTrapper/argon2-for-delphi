@@ -32,7 +32,7 @@ The parts of the string are:
 | m=65536 | Memory size in KiB | Valid range: 8*Parallelism .. 0x7fffffff, and must be a power of two  |
 | p=4 | Parallelization Factor | 1-0x00ffffff  |
 | salt | base64 encoded salt | 0-16 bytes decoded |
-| hash | base64 encoded hash | 64-bytes |
+| hash | base64 encoded hash | 32-bytes |
 
 Because the four argon parameters are stored in the returned string, argon2 password hashes are backwards and forwards compatible with changing the factors. It also makes Argon2 extraordinarily convenient, in that a random salt is automatically generated and stored for you (you don't have to worry about storing it in a database or retrieving it).
 
