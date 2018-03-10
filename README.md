@@ -4,6 +4,9 @@
 
 [Argon2](https://en.wikipedia.org/wiki/Argon2) is a key derivation function. It is designed to take a password (and some salt), and generate a desired number of pseudo-random bytes. Like *scrypt*, it is also *memory hard*, meaning it is designed thwart implementations on ASICs and GPUs. It was selected as the winner of Google's [Password Hashing Competition](https://password-hashing.net/) in 2015.
 
+The algorithm takes every advantage of x86/x64 architecture in can, in order to have the fastest software implementation possible, while making hurting hardware implementations. Argon2 uses the very fast Blake2 software hashing algorithm. Blake2 is faster in software than SHA-3, SHA-2, SHA-1, and MD5.^[1](https://blake2.net/) The reason SHA-3 (Keccak) was not used is because SHA-3 is faster on hardware; and we don't want algorithms that run faster on custom hardware. In order to give custom hardware every disadvantage possible, the fastest *software-only* hashing algorithm was used
+
+
 Sample Usage
 ----------------
 
