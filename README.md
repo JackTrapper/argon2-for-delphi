@@ -37,6 +37,8 @@ There are other reasons we should be interested in Argon2 related to [Egalitaria
 
 I just don't want anyone to think any updates are coming to this.
 
+But if anyone comes back with a pull request that implements the core missing piece with all the tests, I'll get real interested in a hurry.
+
 ------------
 
 **Warning:** This implementation is incomplete. There are items in the Argon2 specification that are undocumented.
